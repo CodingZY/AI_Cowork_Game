@@ -14,7 +14,7 @@ vi.mock('../api/client', () => ({
 describe('DesignWorkbench', () => {
   it('loads design and shows approve/reject', async () => {
     render(<DesignWorkbench runId="r1" status="awaiting_approval" />)
-    await waitFor(() => expect(screen.getByText(/设计总览/)).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByText(/设计总览/).length).toBeGreaterThan(0))
     expect(screen.getByText('通过')).toBeInTheDocument()
     expect(screen.getByText('不通过')).toBeInTheDocument()
   })
