@@ -4,7 +4,7 @@ import { MarkdownEditor } from '../components/MarkdownEditor'
 import { QAPanel } from '../components/QAPanel'
 import type { ProgressMsg } from '../types'
 
-export function DesignWorkbench({ runId, status }: { runId: string; status: string }) {
+export function DesignWorkbench({ runId, status, onMessage }: { runId: string; status: string; onMessage?: (m: ProgressMsg) => void }) {
   const [content, setContent] = useState('')
   const [messages, setMessages] = useState<ProgressMsg[]>([])
   const [question, setQuestion] = useState<{ question: string; options: string[] } | null>(null)
@@ -13,6 +13,7 @@ export function DesignWorkbench({ runId, status }: { runId: string; status: stri
     getDesign(runId).then(setContent).catch(() => {})
     const ws = connectWS(runId, (m) => {
       setMessages(prev => [...prev, m])
+      onMessage?.(m)
       if (m.type === 'ask_user') setQuestion({ question: m.question, options: m.options || [] })
     })
     return () => ws.close()

@@ -25,9 +25,10 @@ def games_root() -> Path:
 
 
 # in-memory sqlite 需 StaticPool 让多连接共享同一库（测试稳定）。
-# AUTOCOMMIT：后台 create_task 与请求轮询并发时，单连接 StaticPool 会让
-# 轮询的 SELECT 开启的长事务阻塞后台 UPDATE 的可见性；AUTOCOMMIT 让每条
-# 语句独立提交，避免跨会话事务快照互相阻塞。
+# AUTOCOMMIT 仅 sqlite+StaticPool 需要：StaticPool 让所有会话共用同一条物理连接，
+# 轮询 GET 会话开启的事务快照会 pin 住快照，导致后台 create_task 的 UPDATE 对它不可见
+# （轮询永远读不到后台的进度更新）。AUTOCOMMIT 让每条语句独立提交，消除跨会话快照阻塞。
+# MySQL/prod 走真实连接池（每会话一条独立连接），不存在单连接快照 pin 问题，保持默认隔离级别。
 if DATABASE_URL.startswith("sqlite"):
     _engine = create_async_engine(
         DATABASE_URL,

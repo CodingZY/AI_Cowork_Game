@@ -64,6 +64,8 @@ async def get_design(run_id: str):
 @router.put("/runs/{run_id}/design.md")
 async def put_design(run_id: str, payload: dict):
     run = await _load_run(run_id)
+    if run.status not in (StageStatus.awaiting_approval.value, StageStatus.rejected.value):
+        raise HTTPException(409, "当前阶段不可编辑设计文档")
     p = games_root() / run.slug / "docs" / "game-design.md"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(payload["content"], encoding="utf-8")
