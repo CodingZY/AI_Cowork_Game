@@ -1,12 +1,14 @@
 """REST 路由：run 管理、设计文档读写、阶段闸、问答回答。"""
 import asyncio
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_session, games_root, _session_factory
 from api.broker import broker
 from api.runtime import start_design
-from persistence.repo import create_run, get_run, list_runs, update_stage, get_pending_approval, resolve_approval
+from persistence.repo import create_run, get_run, list_runs, get_pending_approval
+from persistence.models import GameRun
 from orchestrator.states import Stage, StageStatus
 from orchestrator.machine import StateMachine, RunState
 
@@ -76,10 +78,19 @@ async def approve(run_id: str, session: AsyncSession = Depends(get_session)):
     t = sm.approve(RunState(run.id, Stage(run.current_stage), StageStatus(run.status)), stage=Stage.S1_design)
     if t is None:
         raise HTTPException(409, "当前状态不可通过")
-    await update_stage(session, run_id, stage=t.stage.value, status=t.status.value)
-    ap = await get_pending_approval(session, run_id, stage=Stage.S1_design.value)
-    if ap:
-        await resolve_approval(session, ap.id, resolution="approved", feedback=None)
+    # update_stage + 审批解析 必须原子提交（AUTOCOMMIT 下用显式事务包住），
+    # 避免崩溃后出现"阶段已进 S2 但 S1 审批仍 pending"的悬挂状态。
+    # 用独立会话：注入会话已被 get_run 自动开启事务，session.begin() 会冲突。
+    async with _session_factory() as s2:
+        async with s2.begin():
+            r = await s2.get(GameRun, run_id)
+            r.current_stage = t.stage.value
+            r.status = t.status.value
+            ap = await get_pending_approval(s2, run_id, stage=Stage.S1_design.value)
+            if ap:
+                ap.status = "approved"
+                ap.feedback = None
+                ap.resolved_at = datetime.utcnow()
     broker.publish(run_id, {"type": "gate", "stage": t.stage.value, "status": "approved"})
     return {"ok": True, "current_stage": t.stage.value, "status": t.status.value}
 
@@ -88,12 +99,25 @@ async def approve(run_id: str, session: AsyncSession = Depends(get_session)):
 async def reject(run_id: str, payload: dict):
     feedback = payload.get("feedback", "")
     run = await _load_run(run_id)
-    # 状态回到 design running，带反馈重跑
+    # 通过状态机守卫：仅在 S1 awaiting_approval 时允许拒绝，否则 409。
+    t = sm.reject(
+        RunState(run.id, Stage(run.current_stage), StageStatus(run.status)),
+        stage=Stage.S1_design, feedback=feedback,
+    )
+    if t is None:
+        raise HTTPException(409, "当前状态不可拒绝")
+    # update_stage + 审批解析 原子提交（显式事务），避免悬挂的 pending 审批。
     async with _session_factory() as session:
-        await update_stage(session, run_id, stage=Stage.S1_design.value, status=StageStatus.running.value)
-        ap = await get_pending_approval(session, run_id, stage=Stage.S1_design.value)
-        if ap:
-            await resolve_approval(session, ap.id, resolution="rejected", feedback=feedback)
+        async with session.begin():
+            r = await session.get(GameRun, run_id)
+            r.current_stage = t.stage.value
+            r.status = t.status.value
+            ap = await get_pending_approval(session, run_id, stage=Stage.S1_design.value)
+            if ap:
+                ap.status = "rejected"
+                ap.feedback = feedback
+                ap.resolved_at = datetime.utcnow()
+    # 带反馈重跑 design agent（长跑，留在事务外）。
     task = asyncio.create_task(start_design(run.id, run.game_name, feedback=feedback))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)

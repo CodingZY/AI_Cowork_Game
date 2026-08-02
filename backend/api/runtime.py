@@ -2,7 +2,7 @@
 import re
 from api.broker import broker
 from api.deps import DESIGN_MODEL, BASE_URL, AUTH_TOKEN, games_root, _session_factory
-from persistence.repo import update_stage, create_approval
+from persistence.models import GameRun, PendingApproval
 from orchestrator.states import Stage, StageStatus
 from agents.runner import run_design_agent
 
@@ -32,9 +32,17 @@ async def start_design(run_id: str, game_name: str, *, feedback: str | None = No
             game_root, ask=ask, on_progress=on_progress,
             model=DESIGN_MODEL, base_url=BASE_URL, auth_token=AUTH_TOKEN, prompt=prompt,
         )
+        # update_stage + create_approval 必须原子提交（AUTOCOMMIT 下用显式事务包住，
+        # 避免崩溃后出现"阶段已推进但无审批记录"的悬挂状态）。长跑的 agent 调用留在事务外。
         async with _session_factory() as session:
-            await update_stage(session, run_id, stage=Stage.S1_design.value, status=StageStatus.awaiting_approval.value)
-            await create_approval(session, run_id, stage=Stage.S1_design.value, payload={"doc": "docs/game-design.md"})
+            async with session.begin():
+                run = await session.get(GameRun, run_id)
+                run.current_stage = Stage.S1_design.value
+                run.status = StageStatus.awaiting_approval.value
+                session.add(PendingApproval(
+                    run_id=run_id, stage=Stage.S1_design.value,
+                    payload={"doc": "docs/game-design.md"}, status="pending",
+                ))
         broker.publish(run_id, {"type": "gate", "stage": "S1_design", "status": "awaiting_approval"})
     except Exception as e:
         broker.publish(run_id, {"type": "error", "message": str(e)})
