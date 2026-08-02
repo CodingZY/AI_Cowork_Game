@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 
 from api.deps import _engine, set_games_root
 from api.routes import router as rest_router
+from api.ws import router as ws_router
 from persistence.db import init_db
 
 
@@ -23,6 +24,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(rest_router)
+app.include_router(ws_router)
 
 _init_done = False
 
