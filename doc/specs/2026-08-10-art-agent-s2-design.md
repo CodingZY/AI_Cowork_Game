@@ -2,7 +2,7 @@
 
 > 本 spec 覆盖 `美术素材.md` 的生产者：Art Agent（S2 阶段）。
 >
-> Art Agent 读取 S1 产出的设计文档（文件名不固定，可能是 `game-design.md`、`farmer-game-design.md` 等，由运行时发现），将其拆解为明确的美术资产清单，产出 `docs/美术素材.md`。该清单同时供 Asset Pipeline（S3）消费——故 `美术素材.md` 的格式契约由本 spec 拥有，S3 spec 引用并定义其解析器。
+> Art Agent 读取 S1 产出的设计文档（约定命名 `*-game-design.md`，如 `farmer-game-design.md`，由运行时发现），将其拆解为明确的美术资产清单，产出 `docs/美术素材.md`。该清单同时供 Asset Pipeline（S3）消费——故 `美术素材.md` 的格式契约由本 spec 拥有，S3 spec 引用并定义其解析器。
 >
 > 本文是 `doc/agent-system-design.md`（总架构）的子项目细化，仅描述 S2。S1 已实现（Design Agent），S3/S4 由各自 spec 覆盖。
 
@@ -21,7 +21,7 @@ Art Agent **镜像 Design Agent 的接线**，但去掉 `ask_user`：它是**自
 - README §Art Agent 要求：每个资产含 `[ID]、[类别]、[描述]、[推荐生成 Prompt：含纯白背景/无场景/无地面/无阴影背景/无边框/无UI/仅保留角色本体]、[尺寸/透明度要求]`；并举例四类资产——开场/背景、角色与NPC、地图与建筑物、物品与UI。**README 的"等等"表明该清单非穷举**——本 spec 视其为推荐默认集，`category` 可按游戏类型扩展更多类别（见 §1.2、§0.3 决策 8）。
 - 总架构 §1 工具表：Art Agent 工具 = `read_file`、`write_file(美术素材.md)`，写权限作用域仅 `Games/<name>/docs/美术素材.md`。
 - 总架构 §0.2 阶段链：S1 design → **S2 art-plan**（本 spec）→ S3 art-gen。闸：用户确认素材清单。
-- **设计文档文件名不固定**：S1 可将设计文档命名为 `game-design.md`、`farmer-game-design.md` 等（S1 自决）；S2 不硬编码该文件名，由运行时发现（见 §4.2、§0.3 决策 7）。
+- **设计文档命名约定 `*-game-design.md`**：S1 将设计文档命名为 `<游戏名>-game-design.md`（`*` = 游戏名/项目名前缀，如 `farmer-game-design.md`）。S2 按此模式发现，不硬编码具体文件名（见 §4.2、§0.3 决策 7）。
 
 ### 0.3 已确认的设计决策
 
@@ -31,7 +31,7 @@ Art Agent **镜像 Design Agent 的接线**，但去掉 `ask_user`：它是**自
 4. **抠图时机**：S2 不抠图，只产清单；抠图是 S3 逐张按需（见 S3 spec）。
 5. **approve/reject**：按 run 当前 stage 自动判定，不新增持久化表。
 6. **重跑**：不通过 → 带反馈重调 `query()`（镜像 S1 reject）。
-7. **设计文档文件名不固定（兼容性）**：S1 产出的设计文档名由 S1 决定（现 `game-design.md`，未来可能 `farmer-game-design.md` 等游戏名派生名）。S2 运行时按发现规则解析 `docs/*.md`（排除美术素材文件），不硬编码文件名——故 S1 日后放宽命名 S2 无需改动。详见 §4.2。
+7. **设计文档命名 `*-game-design.md`（兼容性）**：S1 将设计文档命名为 `<游戏名>-game-design.md`（如 `farmer-game-design.md`）。S2 运行时 glob `*-game-design.md` 发现，不硬编码具体文件名。兼容当前 S1 写法 `game-design.md`（无前缀，glob `*-game-design.md` 字面含连字符故不匹配它，发现规则同时接受之，见 §4.2）。S1 日后按约定改命名，S2 无需改动。
 8. **资产类别可扩展（兼容性）**：`category` 为非空字符串而非封闭枚举。README 四类（开场/背景、角色与NPC、地图与建筑物、物品与UI）为推荐默认集；Art Agent 视游戏类型可增补更多类别（如载具、特效与粒子、过场动画、音效图标等），不限四类。详见 §1.2、§2.3。
 
 ---
@@ -46,7 +46,7 @@ Art Agent **镜像 Design Agent 的接线**，但去掉 `ask_user`：它是**自
 
 ````markdown
 ## 美术素材清单
-> 由 Art Agent 读取游戏设计文档（文件名不固定）拆解生成；用户可直接编辑本文件。
+> 由 Art Agent 读取游戏设计文档（`*-game-design.md`）拆解生成；用户可直接编辑本文件。
 > 每项资产对应下方一个 YAML 块；Pipeline 按块批量生成图像。
 
 | ID | 类别 | 文件名 | 尺寸 | 抠图 |
@@ -131,7 +131,7 @@ matting: false
 
 | 工具 | 用途 | 实现 |
 |---|---|---|
-| `read_file(path)` | 读设计文档（文件名不固定，运行时发现，见 §4.2）与本项目其他文件 | 复用现有 `do_read_file` 纯函数；权限限 game_root 内 |
+| `read_file(path)` | 读设计文档（命名 `*-game-design.md`，运行时发现，见 §4.2）与本项目其他文件 | 复用现有 `do_read_file` 纯函数；权限限 game_root 内 |
 | `write_file(path, content)` | 写 `docs/美术素材.md` | 复用现有 `do_write_file` 纯函数；路径限 `docs/美术素材.md` |
 
 工具常量：**复用现有** `TOOL_READ_FILE` / `TOOL_WRITE_FILE`（`backend/agents/tools.py` 已定义，工具名同为 `read_file`/`write_file`）——Art Agent 不引入新工具名，仅工具集不含 `TOOL_ASK_USER`、写权限作用域不同（§2.2）。
@@ -151,11 +151,11 @@ matting: false
 新增 `ART_SYSTEM_PROMPT`（`backend/agents/prompts.py` 扩展）。内容：
 
 ```
-你是一名美术资产规划 Agent，负责读取游戏设计文档（文件名不固定，内容与文件名由 prompt 提供），
+你是一名美术资产规划 Agent，负责读取游戏设计文档（命名 `*-game-design.md`，全文与文件名由 prompt 提供），
 将其拆解为明确的美术资产清单，产出 docs/美术素材.md。
 
 【工作方法】
-1. 设计文档全文由 prompt 提供（文件名不固定，可能是 game-design.md、farmer-game-design.md 等）；
+1. 设计文档全文由 prompt 提供（命名约定 `*-game-design.md`，如 `farmer-game-design.md`）；
    如需重读，按 prompt 给出的文件名用 read_file 读取。先理解游戏类型、美术风格、核心系统、角色/场景/物品。
 2. 以"开场/背景、角色与NPC、地图与建筑物、物品与UI"四类为推荐基础穷举资产，不遗漏关键资产；
    但**不限于四类**——视游戏类型可增补更多类别（如载具、特效与粒子、过场动画、音效图标等）。
@@ -241,10 +241,10 @@ async def run_art_agent(
 
 新增 `start_art_plan(run_id, game_name, *, feedback=None)`（`backend/api/runtime.py` 扩展），镜像 `start_design`：
 - `game_root = games_root() / _slug(game_name)`
-- **发现设计文档**（文件名不固定，§0.3 决策 7）：
-  - `resolve_design_doc(game_root / "docs")`：glob `*.md`，排除匹配 `*美术素材*` 的文件。
-  - 优先选文件名含 `design` 或 `设计` 者（如 `game-design.md`、`farmer-game-design.md`、`farmer-设计.md`）；
-  - 多个含设计关键词 → 取 mtime 最新；无关键词 → 取 mtime 最新；余 0 → 抛错并推 `error`（无设计文档，不启动 Art Agent）。
+- **发现设计文档**（约定 `*-game-design.md`，§0.3 决策 7）：
+  - `resolve_design_doc(game_root / "docs")`：glob `*-game-design.md`；为兼容当前 S1 写法，同时匹配无前缀的 `game-design.md`（glob `*-game-design.md` 字面含连字符，不匹配 `game-design.md`，故显式并列两条）。
+  - 候选排除匹配 `*美术素材*` 者（本 spec 产物，非设计文档）。
+  - 多匹配 → 取 mtime 最新；0 匹配 → 抛错并推 `error`（无设计文档，不启动 Art Agent）。
   - 读其全文 `design_content`、记文件名 `design_name`。
 - `prompt`：注入设计文档全文与文件名，而非硬编码 `docs/game-design.md`：
   `f"游戏《{game_name}》的设计文档已写在 docs/{design_name}，全文如下：\n<<<\n{design_content}\n>>>\n请据此拆解美术资产清单，用 write_file 写入 docs/美术素材.md。"` + 反馈附言（重跑时附"上一版清单反馈：…"）。
@@ -254,7 +254,7 @@ async def run_art_agent(
 - broker 推 `{"type":"gate","stage":"S2_art_plan","status":"awaiting_approval"}`。
 - 异常 → `broker.publish(run_id, {"type":"error","message":str(e)})` + raise。
 
-> 发现规则使 S2 对设计文档文件名保持中立：S1 现写 `game-design.md`，将来若改为 `farmer-game-design.md` 等游戏名派生名，S2 无需改动。`resolve_design_doc` 可放 `backend/api/runtime.py` 或 `backend/agents/` 工具模块，单测覆盖 0/1/多文件三种情形。
+> 发现规则对设计文档文件名按约定 `*-game-design.md` glob，并兼容当前 S1 的 `game-design.md`。S1 现写 `game-design.md`，将来按约定改写 `<游戏名>-game-design.md`（如 `farmer-game-design.md`），S2 无需改动。`resolve_design_doc` 可放 `backend/api/runtime.py` 或 `backend/agents/` 工具模块，单测覆盖 0/1/多匹配三种情形。
 
 ### 4.3 S1→S2 衔接
 
@@ -308,7 +308,7 @@ ART_MODEL=claude-sonnet-4-6
 pytest + pytest-asyncio；mock 为主；用户不手动测 S2。
 
 - **contract**：`validate_art_assets` 正反例——缺字段、重复 id、id 不符正则（如 `A1`/`A1`）、file 非 slug、**category 为空被拒但扩展类别（如`特效与粒子`）通过**、size 格式错、`matting:true` 缺白色背景表述、`matting:true` 缺否定词、汇总表行数与块数不符、空内容。各给通过/失败用例。**重点：含 5+ 类别的清单须通过校验，证明类别不限四类。**
-- **discovery**：`resolve_design_doc` 多情形——0 个 md（抛错）、1 个（取之，含 `farmer-game-design.md`/`farmer-设计.md` 等任意名）、多个含 `design`/`设计` 关键词（取 mtime 最新）、含关键词与非关键词混存（优先关键词）、排除 `美术素材*`。
+- **discovery**：`resolve_design_doc` 情形——0 匹配（抛错）、单个 `farmer-game-design.md`（取之）、单个 `game-design.md`（兼容当前 S1，取之）、多个 `*-game-design.md`（取 mtime 最新）、排除 `美术素材*`。
 - **runner**：mock `query`（`fake_query` 读设计 + 写清单），验证工具接线 + 权限作用域（写越界 Deny）。镜像 `test_runner.py`/`test_permissions.py`。
 - **FSM**：`S1→S2 running→awaiting_approval→(approve)S3 running`、`(reject)S2 running`；守卫（非 awaiting_approval 时 approve/reject 返回 None）。
 - **routes**：`GET/PUT art-list.md`（awaiting_approval 可改、running 不可）、`approve` S1 自动启 S2、`approve` S2、`reject` S2 带反馈重跑。
@@ -345,6 +345,6 @@ pytest + pytest-asyncio；mock 为主；用户不手动测 S2。
 
 - **本 spec 只覆盖 S2**（Art Agent + `美术素材.md` 格式契约 + S1→S2→S3 衔接的 S2 侧）。
 - **S3**（Asset Pipeline：imagegen/styletransfer/cutout/storage/编排 + 前端卡片）由 `doc/specs/2026-08-10-asset-pipeline-s3-design.md` 覆盖。两 spec 的接口面是 **`美术素材.md` 格式**（本 spec 拥有）与 **FSM `approve(S2)→S3 running`**（双方各写己侧）。
-- **兼容性**（§0.3 决策 7/8）：设计文档文件名不固定（S2 发现，不依赖 S1 改名）；资产类别可扩展（非封闭枚举）。二者均不要求改动已实现的 S1——S1 现写 `game-design.md`，S2 照常发现；S1 日后放宽命名 S2 无需改动。
+- **兼容性**（§0.3 决策 7/8）：设计文档命名约定 `*-game-design.md`（S2 按约定 glob 发现，兼容当前 S1 的 `game-design.md`，不要求立即改 S1）；资产类别可扩展（非封闭枚举）。S1 日后按约定写 `<游戏名>-game-design.md`，S2 无需改动。
 - **S4**（Coder）与总架构子项目拆分（§6）由后续 spec 覆盖。
 - 实施计划由后续 `writing-plans` 环节产出。

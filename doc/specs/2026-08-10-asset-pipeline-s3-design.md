@@ -41,7 +41,7 @@
 7. **重试**：外部 API 失败指数退避 3 次 → 仍败记 `error` 状态，前端卡片显示 + 可重试。
 8. **C 盘约束**：rembg 模型目录指 D 盘（`U2NET_HOME`）；httpx/PIL/onnxruntime 已在 agent_env。
 9. **不验证 API 真实能力**（用户指定"按证据设计"）：imagegen 按 OpenAI 兼容同步 `/images/generations` 设计；styletransfer 做适配器（原生 img2img / prompt 降级），实现期第一个任务验证端点真实能力并定型。
-10. **输入文件名中立（兼容性）**：S3 读 Art Agent 产出的 `docs/美术素材.md`——这是 Art Agent 自身产物的固定约定（Art Agent 写权限仅限该名），非外部文件名假设，故无兼容问题。S3 不读设计文档（那是 S2 的输入，由 S2 发现），故 S3 不受设计文档命名影响。
+10. **输入文件名中立（兼容性）**：S3 读 Art Agent 产出的 `docs/美术素材.md`——这是 Art Agent 自身产物的固定约定（Art Agent 写权限仅限该名），非外部文件名假设。S3 不读设计文档（那是 S2 的输入，命名约定 `*-game-design.md` 由 S2 发现，见 S2 spec），故 S3 不受设计文档命名影响。
 11. **类别可扩展（兼容性）**：`AssetSpec.category` 为任意非空字符串（Art Agent spec §1.2 已定为非封闭枚举）。S3 与前端按 category 字符串动态分组/展示，不假设固定四类——含 5+ 类别的清单照常处理。
 
 ---
