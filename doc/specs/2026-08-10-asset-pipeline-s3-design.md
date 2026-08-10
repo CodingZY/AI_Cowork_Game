@@ -41,6 +41,8 @@
 7. **重试**：外部 API 失败指数退避 3 次 → 仍败记 `error` 状态，前端卡片显示 + 可重试。
 8. **C 盘约束**：rembg 模型目录指 D 盘（`U2NET_HOME`）；httpx/PIL/onnxruntime 已在 agent_env。
 9. **不验证 API 真实能力**（用户指定"按证据设计"）：imagegen 按 OpenAI 兼容同步 `/images/generations` 设计；styletransfer 做适配器（原生 img2img / prompt 降级），实现期第一个任务验证端点真实能力并定型。
+10. **输入文件名中立（兼容性）**：S3 读 Art Agent 产出的 `docs/美术素材.md`——这是 Art Agent 自身产物的固定约定（Art Agent 写权限仅限该名），非外部文件名假设，故无兼容问题。S3 不读设计文档（那是 S2 的输入，由 S2 发现），故 S3 不受设计文档命名影响。
+11. **类别可扩展（兼容性）**：`AssetSpec.category` 为任意非空字符串（Art Agent spec §1.2 已定为非封闭枚举）。S3 与前端按 category 字符串动态分组/展示，不假设固定四类——含 5+ 类别的清单照常处理。
 
 ---
 
@@ -54,8 +56,8 @@
 ```python
 @dataclass
 class AssetSpec:
-    id: str          # A01..A999
-    category: str    # 四选一
+    id: str          # A01..（正则 ^A\d{2,}$，无上限）
+    category: str    # 任意非空字符串，非封闭枚举（见决策 11）
     file: str        # slug，无后缀
     prompt: str      # 含背景约束
     width: int
@@ -68,9 +70,9 @@ def parse_art_list(md: str) -> list[AssetSpec]:
 ```
 
 - 按 ` ```yaml ` 块切分；每块 `yaml.safe_load`。
-- 字段映射：`size` "WxH" → `width`/`height` int；`matting` → bool。
+- 字段映射：`size` "WxH" → `width`/`height` int；`matting` → bool；`category` 原样保留（字符串，不校验是否在四类内）。
 - 解析前先调 `validate_art_assets(md)`（contract），失败抛带原因的 ValueError（含受影响块序号）。
-- 单测：fixture md → 期望 AssetSpec 列表；非法 md → ValueError。
+- 单测：fixture md → 期望 AssetSpec 列表；**含 5+ 类别的 md 须正常解析**；非法 md → ValueError。
 
 ### 1.2 命名与产物路径
 
@@ -240,8 +242,8 @@ S2 `approve`（S2 spec）返回 `(S3_art_gen, running)`，并在 approve 路由�
 ### 6.1 ArtifactsBoard（S3）
 
 新增 `frontend/src/stages/ArtifactsBoard.tsx`：
-- **卡片网格**：每张卡片 = 缩略图（`raw_url`）+ 状态徽标（待处理/已保存/已抠图/出错）+ 三按钮【直接保存】/【抠图并保存】/【修改 Prompt 重试】。已保存/已抠图卡片显示 processed 缩略图。
-- **顶部【风格转绘】全局面板**：上传风格参考图 + 多选目标资产（checkbox 列表）+ 可选统一结构参考图（留空则各资产用自己的 raw）+ 可选 prompt 附加 → 调 style-transfer 端点。
+- **卡片网格**：每张卡片 = 缩略图（`raw_url`）+ 状态徽标（待处理/已保存/已抠图/出错）+ 三按钮【直接保存】/【抠图并保存】/【修改 Prompt 重试】。已保存/已抠图卡片显示 processed 缩略图。**按 `category` 字符串动态分组/分区展示**（不硬编码四类——含 5+ 类别时各组各自分区，类别未知也能渲染）。
+- **顶部【风格转绘】全局面板**：上传风格参考图 + 多选目标资产（checkbox 列表，按类别分组）+ 可选统一结构参考图（留空则各资产用自己的 raw）+ 可选 prompt 附加 → 调 style-transfer 端点。
 - **顶部【素材完成】按钮**：`status==='awaiting_approval'` 时启用 → approve 过闸进 S4。
 - **进度流**：WebSocket 推 `{"type":"asset",...}` 更新卡片状态。
 
@@ -273,7 +275,7 @@ REMBG_MODELS_DIR=D:/yanjiusheng/shixi/youxicehua/AI_Cowork_Game/.rembg_models
 
 pytest + pytest-asyncio；mock 为主；cutout 真跑（rembg 在 agent_env，快）。用户不手动测 S3（除可选的真 API 端点验证）。
 
-- **parser**：fixture md → AssetSpec 列表；非法 md → ValueError。
+- **parser**：fixture md → AssetSpec 列表；非法 md → ValueError。**含 6 个类别（含 `特效与粒子` 等扩展类）的 md 须正常解析为 6 组**，证明类别不限四类。
 - **imagegen**：mock httpx → 返回 `data[0].url`（下载）与 `data[0].b64_json`（解码）两条；重试 3 次后抛 ImageGenError。
 - **styletransfer**：mock 路径 A（原生 img2img）与路径 B（prompt 降级）各一次。
 - **cutout**：fixture 图 → rembg → 输出有 alpha 通道（真跑）。
@@ -316,6 +318,7 @@ pytest + pytest-asyncio；mock 为主；cutout 真跑（rembg 在 agent_env，�
 
 - **本 spec 只覆盖 S3**（Asset Pipeline：imagegen/styletransfer/cutout/storage/编排 + S3 前端卡片 + 风格转绘全局面板 + S2→S3→S4 衔接的 S3 侧）。
 - **接口面**：与 S2 spec 共享 `美术素材.md` 格式（S2 拥有，本 spec 定义解析器）与 FSM `approve(S2)→S3 running`/`approve(S3)→S4`（双方各写己侧）。
+- **兼容性**（决策 10/11）：S3 读 `美术素材.md`（Art Agent 自身产物的固定约定，非外部文件名假设，故不受设计文档命名影响）；`category` 为任意非空字符串，S3 与前端按其动态分组，不假设固定四类。
 - **S4**（Coder）由后续 spec 覆盖；本 spec 不定义 Coder 如何读 `processed/`（那是 S4 的 assets_map）。
 - **未验证项**（实现期 Task 1 定型）：imagegen 端点 size 分隔符与返回形态、styletransfer 原生 vs 降级路径。
 - 实施计划由后续 `writing-plans` 环节产出。
