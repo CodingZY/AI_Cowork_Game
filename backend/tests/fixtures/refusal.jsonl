@@ -1,0 +1,2 @@
+{"type":"system","subtype":"model_refusal_no_fallback"}
+{"type":"result","subtype":"success","is_error":true,"stop_reason":"refusal","result":"API Error: policy"}
