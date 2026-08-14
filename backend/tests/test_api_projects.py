@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+
+from app.api.projects import get_session
+from app.main import app
+from app.models import Base
+
+
+@pytest.fixture
+async def client(tmp_path, monkeypatch):
+    """httpx AsyncClient 走 ASGITransport，DB 用 sqlite in-memory + StaticPool
+    （多请求共享同一连接），session 依赖 override。ensure_workspace 指向 tmp_path
+    避免真建 Games/ 目录。lifespan 在 ASGITransport 下不跑，故手动 create_all。
+    """
+    # 避免真建 Games/：project_service.create 内调 ensure_workspace
+    from app.services import project_service
+
+    def fake_ensure_workspace(project_key: str, base=None):
+        p = tmp_path / project_key
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    monkeypatch.setattr(project_service, "ensure_workspace", fake_ensure_workspace)
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sm = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_session():
+        async with sm() as s:
+            yield s
+
+    app.dependency_overrides[get_session] = override_session
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+    app.dependency_overrides.clear()
+    await engine.dispose()
+
+
+async def test_create_project_endpoint(client):
+    r = await client.post(
+        "/api/projects", json={"name": "FarmDemo", "description": "d"}
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["status"] == "CREATED"
+    assert "farmdemo" in body["project_key"]
+    assert body["name"] == "FarmDemo"
+    assert body["workspace_root"]
+    assert body["id"]
+
+
+async def test_get_project(client):
+    create = await client.post(
+        "/api/projects", json={"name": "FarmDemo", "description": "d"}
+    )
+    assert create.status_code == 201
+    pid = create.json()["id"]
+    r = await client.get(f"/api/projects/{pid}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == pid
+    assert body["name"] == "FarmDemo"
+    assert body["status"] == "CREATED"
+    assert body["project_key"] == create.json()["project_key"]
+
+
+async def test_get_project_404(client):
+    r = await client.get("/api/projects/999")
+    assert r.status_code == 404
+
+
+async def test_brainstorm_enqueues(client, monkeypatch):
+    # 先建项目拿到合法 id
+    create = await client.post(
+        "/api/projects", json={"name": "FarmDemo", "description": "d"}
+    )
+    pid = create.json()["id"]
+
+    async def fake_enqueue(project_id: int) -> str:
+        assert project_id == pid
+        return "job-x"
+
+    monkeypatch.setattr("app.api.projects.enqueue_brainstorm", fake_enqueue)
+    r = await client.post(f"/api/projects/{pid}/brainstorm")
+    assert r.status_code == 202
+    assert r.json()["task_id"] == "job-x"
