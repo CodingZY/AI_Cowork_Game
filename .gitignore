@@ -2,8 +2,11 @@ __pycache__/
 *.pyc
 .venv/
 .env
+.spike.env
 node_modules/
 dist/
 .pytest_cache/
 Games/
 .superpowers/
+.rembg_models/
+.npm-cache/
