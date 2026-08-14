@@ -87,11 +87,15 @@ async def test_brainstorm_enqueues(client, monkeypatch):
     )
     pid = create.json()["id"]
 
-    async def fake_enqueue(project_id: int) -> str:
-        assert project_id == pid
+    calls = []
+
+    async def fake_enqueue(project_id: int, prompt: str) -> str:
+        calls.append((project_id, prompt))
         return "job-x"
 
     monkeypatch.setattr("app.api.projects.enqueue_brainstorm", fake_enqueue)
-    r = await client.post(f"/api/projects/{pid}/brainstorm")
+    r = await client.post(f"/api/projects/{pid}/brainstorm", json={"idea": "种田游戏"})
     assert r.status_code == 202
     assert r.json()["task_id"] == "job-x"
+    # 验证用户 idea 透传到 enqueue_brainstorm（C1 防回归）
+    assert calls == [(pid, "种田游戏")]

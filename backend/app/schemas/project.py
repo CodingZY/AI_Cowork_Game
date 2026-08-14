@@ -16,3 +16,7 @@ class ProjectRead(BaseModel):
     name: str
     status: str
     workspace_root: str
+
+
+class BrainstormRequest(BaseModel):
+    idea: str

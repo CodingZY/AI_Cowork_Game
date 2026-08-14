@@ -23,11 +23,12 @@ async def test_enqueue_brainstorm(monkeypatch):
         async def enqueue_job(self, func, *args, _queue_name=None):
             assert func == "run_brainstorm"
             assert args[0] == 1
+            assert args[1] == "种田游戏"
             return FakeJob()
 
     async def fake_create_pool(settings):
         return FakeRedis()
 
     monkeypatch.setattr(jobs, "create_pool", fake_create_pool)
-    jid = await jobs.enqueue_brainstorm(1)
+    jid = await jobs.enqueue_brainstorm(1, "种田游戏")
     assert jid == "job-1"

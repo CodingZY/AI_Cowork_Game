@@ -15,7 +15,7 @@ from app.workflow.states import ProjectStatus
 AGENT_TYPE = "BRAINSTORM"
 
 
-async def run_brainstorm(ctx, project_id: int, prompt: str = "开始设计游戏"):
+async def run_brainstorm(ctx, project_id: int, prompt: str):
     """Arq task：编排 brainstorm 阶段全流程。
 
     流程（spec §5.6 + 控制器裁决）：

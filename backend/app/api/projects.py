@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.persistence.db import get_sessionmaker
 from app.persistence.repo import ProjectRepo
 from app.queue.jobs import enqueue_brainstorm
-from app.schemas.project import ProjectCreate, ProjectRead
+from app.schemas.project import ProjectCreate, ProjectRead, BrainstormRequest
 from app.services import project_service
 
 router = APIRouter(prefix="/api")
@@ -50,6 +50,6 @@ async def get_project(pid: int, session: AsyncSession = Depends(get_session)):
 
 
 @router.post("/projects/{pid}/brainstorm", status_code=202)
-async def start_brainstorm(pid: int):
-    job_id = await enqueue_brainstorm(pid)
+async def start_brainstorm(pid: int, body: BrainstormRequest):
+    job_id = await enqueue_brainstorm(pid, body.idea)
     return {"task_id": job_id}

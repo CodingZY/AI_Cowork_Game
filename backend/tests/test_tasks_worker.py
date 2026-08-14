@@ -271,7 +271,7 @@ async def test_run_brainstorm_blocked_status(db_sm, monkeypatch):
     pid = await _create_project(db_sm, key="blocked", status="FAILED")
 
     with pytest.raises(WorkflowBlocked):
-        await run_brainstorm(ctx={}, project_id=pid)
+        await run_brainstorm(ctx={}, project_id=pid, prompt="test")
 
 
 async def test_run_brainstorm_project_not_found(db_sm, fake_aioredis, monkeypatch):
@@ -279,7 +279,7 @@ async def test_run_brainstorm_project_not_found(db_sm, fake_aioredis, monkeypatc
     monkeypatch.setattr("app.queue.tasks.get_sessionmaker", lambda: db_sm)
     monkeypatch.setattr("app.queue.tasks.aioredis", fake_aioredis)
 
-    result = await run_brainstorm(ctx={}, project_id=999999)
+    result = await run_brainstorm(ctx={}, project_id=999999, prompt="test")
 
     assert result["failed"] is True
     assert result["reason"] == "project_not_found"
