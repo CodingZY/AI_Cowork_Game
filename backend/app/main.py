@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.events import router as events_router
 from app.api.projects import router as projects_router
 from app.models import Base
 from app.persistence.db import get_engine
@@ -19,3 +20,4 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(projects_router)
+app.include_router(events_router)
