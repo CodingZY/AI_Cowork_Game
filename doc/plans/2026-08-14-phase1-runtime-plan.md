@@ -1442,25 +1442,47 @@ curl -s -X POST http://127.0.0.1:8000/api/projects/<id>/brainstorm -d '{"idea":"
 # SSE 应续看同 session 的新事件
 ```
 
-- [ ] **Step 5: 验收检查清单**
+- [x] **Step 5: 验收检查清单**（2026-08-15 实测，project id=1 / key=farmdemo-77aa59）
 
-- [ ] events 表有 ≥3 行（started/delta/completed）
-- [ ] agent_sessions.claude_session_id 已回填、status=COMPLETED
-- [ ] `Games/farmdemo/` 下生成了 `*-game-design.md`
-- [ ] SSE 第二轮看到同 session_id 的续接事件
-- [ ] 若触发 refusal：agent_sessions.status=FAILED(reason=content_review)，SSE 显示 agent.refused（属预期三态，非 bug）
+- [x] events 表有 ≥3 行（started/delta/completed）——实测 140 行：第一轮 114 + 第二轮 26；分布 delta 96 / tool.start+completed 22 / message.completed 8 / session.started+completed 2
+- [x] agent_sessions.claude_session_id 已回填、status=COMPLETED——session 2/3 均 COMPLETED，同一 claude_session_id `27f5d675-5eba-427b-8d0a-151b1ba7caa5`
+- [x] `Games/farmdemo-77aa59/` 下生成了 `*-game-design.md`——`farmdemo-77aa59-game-design.md`，含 Overview/Core Loop/Player Goals/Mechanics/Features + 第二轮追加 `## NPC 作息`
+- [x] SSE 第二轮看到同 session_id 的续接事件——第二轮 `agent.session.started.session_id` == 第一轮（matches prev: True）
+- [x] 若触发 refusal：……——本轮两轮均 succeeded=True，未走 refusal 分支（三态处理代码就绪，未触发）
 
-- [ ] **Step 6: 记录验收结果到 doc**
+- [x] **Step 6: 记录验收结果到 doc**（见下「验收执行记录」）
 
-```bash
-# 在 doc/specs/ 同级或 plan 末尾追加验收记录（通过/失败+现象）
-```
-
-- [ ] **Step 7: 提交（若有验收中发现的 fix）**
+- [x] **Step 7: 提交（验收中发现的 fix）**
 
 ```bash
-git add -A && git commit -m "test(e2e): Phase1 验收链路手动验证（brainstorm→落库→回放→resume）"
+git add backend/app/persistence/db.py backend/app/queue/worker.py backend/app/agent/runtime.py backend/app/queue/tasks.py doc/plans/2026-08-14-phase1-runtime-plan.md
+git commit -m "fix(backend): Phase1 e2e 修复 4 项 + 验收记录（pool_pre_ping/arq queue/claude.exe/异常兜底）"
 ```
+
+---
+
+### 验收执行记录（2026-08-15）
+
+**链路 ①-⑤ 全通过**（真打 KSPMAS kimi-k3，project id=1 / key=farmdemo-77aa59）：
+
+| 步骤 | 结果 |
+|---|---|
+| ① POST /api/projects | 201，project id=1 status=CREATED，workspace=Games/farmdemo-77aa59 |
+| ② POST /api/projects/1/brainstorm | 202，task_id 返回 |
+| ③ Worker run_brainstorm | spawn claude.exe → kimi-k3 流式 → 114 事件落库 → 落 GDD → session COMPLETED；耗时 101.69s |
+| ④ GET /stream?after=0 SSE | 200 text/event-stream，补历史+实时，事件序列 delta→tool→completed 完整 |
+| ⑤ 第二轮 resume | enqueue 202 → run_brainstorm 查 last_claude_session 命中 → `--resume 27f5d675` → 同 session_id 续接 26 事件 → GDD 追加 `## NPC 作息` → session 3 COMPLETED |
+
+**e2e 暴露并修复的 4 个真实 bug**（单测用 sqlite + FakeRedis + monkeypatch `_spawn_stream` 未覆盖）：
+
+1. **`pool_pre_ping=True` + asyncmy 不兼容**（`db.py`）：asyncmy 异步 ping 适配签名与 SQLAlchemy 默认 `do_ping`（pymysql 同步签名）不匹配，请求时 pool 复用连接触发 pre_ping 抛 `ping() missing argument 'reconnect'`。建表首连不触发故 lifespan OK、请求才炸。修复：去掉 `pool_pre_ping`（本地 MySQL 稳定；将来防 stale 用 `pool_recycle`）。
+2. **Arq worker queue_name 不匹配**（`worker.py`）：`jobs.enqueue_brainstorm` 用 `_queue_name=settings.arq_queue`（"agent"），worker 未设 `queue_name` → arq 默认监听 "arq"。arq 0.28 队列 key 是裸 queue_name（zset），job 进 `agent` zset、worker 监听 `arq` zset → 永不消费。修复：`WorkerSettings.queue_name = settings.arq_queue`。
+3. **Windows spawn claude 失败**（`runtime.py`）：npm 全局 `claude` 在 Windows 是 `.cmd` shim，`asyncio.create_subprocess_exec`（非 shell，走 CreateProcess）找不到无扩展名 `claude`，抛 `FileNotFoundError [WinError 2]`。实际可执行是 `<node_global>/node_modules/@anthropic-ai/claude-code/bin/claude.exe`（claude-code 2.x bun 编译原生 exe）。修复：`_resolve_claude_bin()` 解析 claude.exe 绝对路径直接 exec——绕过 cmd.exe，避免多行 `--append-system-prompt` 在换行处被截断。
+4. **run_brainstorm 异常不兜底致状态泄漏**（`tasks.py`）：spawn 失败等异常在 `async for` 抛出，三态收尾被跳过 → agent_session 泄漏 `RUNNING`、project 卡死 `BRAINSTORMING`。修复：`async for` 包 try/except，异常补发 `agent.session.failed` 事件并走 FAILED 三态收尾。
+
+**观察（非 bug，Phase 1 边界外）**：kimi-k3 实测调用了 11 次 `PowerShell` 工具（非 prompt 约束的 Read/Write），但未触发 content_review refusal、最终仍用 Write 落/更新 GDD，session 正常 COMPLETED。属 agent 行为（prompt 未约束住模型），Runtime 链路不受影响；spec §5.4 已预判"尽量少调 PowerShell"，后续 Phase 3 接 Skills 时收紧工具白名单。
+
+**e2e 环境补建**：MySQL 库 `ai_cowork_game` 首次未建（Task 0 Step 6 漏，单测用 sqlite 未暴露），已 `CREATE DATABASE`；`.env` MySQL 凭据由用户填入正确密码。
 
 ---
 

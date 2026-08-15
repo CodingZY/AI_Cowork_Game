@@ -8,6 +8,7 @@ from app.config.settings import get_settings
 from app.events.broker import EventBroker
 from app.persistence.db import get_sessionmaker
 from app.persistence.repo import AgentSessionRepo, ProjectRepo
+from app.schemas.event import CoworkEvent
 from app.workflow.engine import assert_can_brainstorm
 from app.workflow.states import ProjectStatus
 
@@ -65,6 +66,7 @@ async def run_brainstorm(ctx, project_id: int, prompt: str):
         succeeded = False
         refused = False
         last_sid = None
+        runtime_err = None
 
         async def _events():
             if prev_sid:
@@ -80,15 +82,27 @@ async def run_brainstorm(ctx, project_id: int, prompt: str):
                 ):
                     yield e
 
-        async for evt in _events():
-            evt.aggregate_id = as_id  # 关联到本 agent_session
-            if evt.type == "agent.session.started":
-                last_sid = evt.data.get("session_id")
-            elif evt.type == "agent.session.completed":
-                succeeded = True
-            elif evt.type == "agent.refused":
-                refused = True
-            await broker.publish(evt)
+        # spawn 失败/子进程崩溃/IO 错误等不能向上抛——否则三态收尾被跳过，
+        # agent_session 泄漏 RUNNING、project 卡死 BRAINSTORMING。捕获后补发
+        # agent.session.failed 事件（spec §5.6 协议/IO 错误），仍走三态收尾。
+        try:
+            async for evt in _events():
+                evt.aggregate_id = as_id  # 关联到本 agent_session
+                if evt.type == "agent.session.started":
+                    last_sid = evt.data.get("session_id")
+                elif evt.type == "agent.session.completed":
+                    succeeded = True
+                elif evt.type == "agent.refused":
+                    refused = True
+                await broker.publish(evt)
+        except Exception as e:
+            runtime_err = f"{type(e).__name__}: {e}"
+            await broker.publish(CoworkEvent(
+                project_id=project_id,
+                type="agent.session.failed",
+                data={"reason": "runtime_error", "error": runtime_err},
+                aggregate_id=as_id,
+            ))
 
         # 4. 三态收尾（spec §5.6）
         if refused:
@@ -101,9 +115,10 @@ async def run_brainstorm(ctx, project_id: int, prompt: str):
                 "COMPLETED", ProjectStatus.BRAINSTORMING, None,
             )
         else:
-            # 无 completed 也无 refused（子进程崩溃等）→ FAILED
+            # 无 completed 也无 refused（spawn 失败/子进程崩溃等）→ FAILED
             status, proj_status, reason = (
-                "FAILED", ProjectStatus.FAILED, "runtime_error",
+                "FAILED", ProjectStatus.FAILED,
+                f"runtime_error: {runtime_err}" if runtime_err else "runtime_error",
             )
         async with sm() as s:
             if last_sid:
@@ -116,6 +131,7 @@ async def run_brainstorm(ctx, project_id: int, prompt: str):
             "succeeded": succeeded,
             "refused": refused,
             "reason": reason,
+            "error": runtime_err,
         }
     finally:
         await lock.release()

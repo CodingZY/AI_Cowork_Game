@@ -2,10 +2,39 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import sys
 from typing import AsyncIterator, Optional
 
 from app.agent.parser import ClaudeEventParser
 from app.config.settings import get_settings
+
+
+def _resolve_claude_bin() -> str:
+    """解析 claude 可执行路径，跨平台。
+
+    Windows: npm 全局 `claude` 是 `.cmd` shim，asyncio.create_subprocess_exec
+    不经 shell（走 CreateProcess）找不到无扩展名的 `claude`；实际可执行在
+    ``<node_global>/node_modules/@anthropic-ai/claude-code/bin/claude.exe``
+    （claude-code 2.x 为 bun 编译的原生 exe）。直接 exec 该 .exe，绕过
+    cmd.exe——避免多行 ``--append-system-prompt`` 被 cmd.exe 在换行处截断。
+    Unix: ``shutil.which('claude')`` 返回的可 exec 路径直接用。
+    """
+    if sys.platform == "win32":
+        shim = shutil.which("claude") or shutil.which("claude.cmd")
+        if shim:
+            exe = os.path.join(
+                os.path.dirname(shim),
+                "node_modules",
+                "@anthropic-ai",
+                "claude-code",
+                "bin",
+                "claude.exe",
+            )
+            if os.path.isfile(exe):
+                return exe
+        return "claude"  # fallback（可能仍 FileNotFoundError，e2e 可见）
+    return shutil.which("claude") or "claude"
 
 
 class ClaudeRuntime:
@@ -19,12 +48,14 @@ class ClaudeRuntime:
 
     def __init__(self):
         self.settings = get_settings()
+        self.claude_bin = _resolve_claude_bin()
         self.proc: Optional[asyncio.subprocess.Process] = None
 
     def _build_cmd(self, prompt, resume_sid=None, system_prompt=None) -> list[str]:
         # --bare 强制：不带会背 26707 token 宿主上下文 + hook 报错 + refusal（spike）
+        # 首元素用解析出的 claude.exe 绝对路径（Windows，见 _resolve_claude_bin）
         cmd = [
-            "claude", "-p", prompt,
+            self.claude_bin, "-p", prompt,
             "--output-format", "stream-json", "--verbose",
             "--include-partial-messages",
             "--bare", "--allowedTools", "Read", "Write",
