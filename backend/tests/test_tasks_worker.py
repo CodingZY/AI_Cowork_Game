@@ -12,6 +12,8 @@ from app.queue.tasks import run_brainstorm
 from app.schemas.event import CoworkEvent
 from app.workflow.engine import WorkflowBlocked
 
+from tests.conftest import FakeGitService
+
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -68,15 +70,18 @@ class FakeRuntime:
         self.evts = evts
         self.called = None
         self.resume_sid = None
+        self.cwd = None
 
     async def start(self, prompt, cwd, project_id, agent_type="brainstorm", system_prompt=None):
         self.called = "start"
+        self.cwd = cwd
         for e in self.evts:
             yield e
 
     async def resume(self, session_id, prompt, cwd, project_id, agent_type="brainstorm", system_prompt=None):
         self.called = "resume"
         self.resume_sid = session_id
+        self.cwd = cwd
         for e in self.evts:
             yield e
 
@@ -150,6 +155,9 @@ async def test_run_brainstorm_success(db_sm, fake_aioredis, monkeypatch):
     """成功路径：CREATED→BRAINSTORMING→COMPLETED，project 保持 BRAINSTORMING。"""
     monkeypatch.setattr("app.queue.tasks.get_sessionmaker", lambda: db_sm)
     monkeypatch.setattr("app.queue.tasks.aioredis", fake_aioredis)
+    fake_git = FakeGitService()
+    monkeypatch.setattr("app.queue.tasks.GitService", lambda: fake_git)
+    monkeypatch.setattr("app.queue.tasks.ensure_template_pushed", fake_git.ensure_template_pushed)
 
     pid = await _create_project(db_sm, key="success")
 
@@ -187,24 +195,30 @@ async def test_run_brainstorm_success(db_sm, fake_aioredis, monkeypatch):
         proj = await ProjectRepo(s).get(pid)
         assert proj.status == "BRAINSTORMING"
 
-        # events: 3 rows, aggregate_id 关联到 agent_session
+        # events: 4 rows (3 agent + 1 git.worktree.added)
         rows = (
             await s.execute(select(Event).where(Event.project_id == pid))
         ).scalars().all()
-        assert len(rows) == 3
-        for r in rows:
+        assert len(rows) == 4
+        # agent 事件 aggregate_id 关联到 agent_session；git 事件 aggregate_type="git"
+        agent_rows = [r for r in rows if r.aggregate_type != "git"]
+        assert len(agent_rows) == 3
+        for r in agent_rows:
             assert r.aggregate_id == ags.id
 
-        # broadcast: FakeRedis stream 有 3 条
+        # broadcast: FakeRedis stream 有 4 条
         stream = fake_aioredis._redis.streams.get(f"stream:project:{pid}")
         assert stream is not None
-        assert len(stream) == 3
+        assert len(stream) == 4
 
 
 async def test_run_brainstorm_refusal(db_sm, fake_aioredis, monkeypatch):
     """拒绝路径：session.started + agent.refused → FAILED + project FAILED。"""
     monkeypatch.setattr("app.queue.tasks.get_sessionmaker", lambda: db_sm)
     monkeypatch.setattr("app.queue.tasks.aioredis", fake_aioredis)
+    fake_git = FakeGitService()
+    monkeypatch.setattr("app.queue.tasks.GitService", lambda: fake_git)
+    monkeypatch.setattr("app.queue.tasks.ensure_template_pushed", fake_git.ensure_template_pushed)
 
     pid = await _create_project(db_sm, key="refused")
 
@@ -237,6 +251,9 @@ async def test_run_brainstorm_resume(db_sm, fake_aioredis, monkeypatch):
     """resume 路径：有 COMPLETED session → runtime.resume 被调用，session_id=prev-sid。"""
     monkeypatch.setattr("app.queue.tasks.get_sessionmaker", lambda: db_sm)
     monkeypatch.setattr("app.queue.tasks.aioredis", fake_aioredis)
+    fake_git = FakeGitService()
+    monkeypatch.setattr("app.queue.tasks.GitService", lambda: fake_git)
+    monkeypatch.setattr("app.queue.tasks.ensure_template_pushed", fake_git.ensure_template_pushed)
 
     pid = await _create_project(db_sm, key="resumeproj")
 
@@ -267,6 +284,9 @@ async def test_run_brainstorm_resume(db_sm, fake_aioredis, monkeypatch):
 async def test_run_brainstorm_blocked_status(db_sm, monkeypatch):
     """非法状态：project=FAILED → WorkflowBlocked 抛出。"""
     monkeypatch.setattr("app.queue.tasks.get_sessionmaker", lambda: db_sm)
+    fake_git = FakeGitService()
+    monkeypatch.setattr("app.queue.tasks.GitService", lambda: fake_git)
+    monkeypatch.setattr("app.queue.tasks.ensure_template_pushed", fake_git.ensure_template_pushed)
 
     pid = await _create_project(db_sm, key="blocked", status="FAILED")
 
@@ -278,6 +298,9 @@ async def test_run_brainstorm_project_not_found(db_sm, fake_aioredis, monkeypatc
     """project 不存在 → 返回 failed dict。"""
     monkeypatch.setattr("app.queue.tasks.get_sessionmaker", lambda: db_sm)
     monkeypatch.setattr("app.queue.tasks.aioredis", fake_aioredis)
+    fake_git = FakeGitService()
+    monkeypatch.setattr("app.queue.tasks.GitService", lambda: fake_git)
+    monkeypatch.setattr("app.queue.tasks.ensure_template_pushed", fake_git.ensure_template_pushed)
 
     result = await run_brainstorm(ctx={}, project_id=999999, prompt="test")
 
@@ -289,6 +312,9 @@ async def test_run_brainstorm_runtime_error(db_sm, fake_aioredis, monkeypatch):
     """runtime 异常路径：只有 session.started 无 completed/refused → FAILED + runtime_error。"""
     monkeypatch.setattr("app.queue.tasks.get_sessionmaker", lambda: db_sm)
     monkeypatch.setattr("app.queue.tasks.aioredis", fake_aioredis)
+    fake_git = FakeGitService()
+    monkeypatch.setattr("app.queue.tasks.GitService", lambda: fake_git)
+    monkeypatch.setattr("app.queue.tasks.ensure_template_pushed", fake_git.ensure_template_pushed)
 
     pid = await _create_project(db_sm, key="rterr")
 

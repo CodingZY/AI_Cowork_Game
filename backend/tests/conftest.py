@@ -94,3 +94,32 @@ def local_bare_repo(tmp_path):
     # "remote HEAD refers to nonexistent ref" 且不建本地 main，导致 rev-parse main 失败。
     _run(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=str(origin))
     return origin, f"file:///{origin.as_posix()}"
+
+
+class FakeGitService:
+    """FakeGitService：记录调用，模拟 worktree 路径 + copy_template。供 run_brainstorm 集成测试注入。"""
+    def __init__(self, wt_root=None):
+        from pathlib import Path
+        self.clone_called = False
+        self.template_pushed = False
+        self.worktree_calls = []
+        self.copy_calls = []
+        self.wt_root = wt_root or Path("/fake/workspace/worktrees")
+
+    async def ensure_clone(self, origin_url=None):
+        self.clone_called = True
+        return self.wt_root / "games-repo"
+
+    async def ensure_template_pushed(self, git_service=None):
+        self.template_pushed = True
+        return False
+
+    async def worktree_add(self, project_key, branch):
+        self.worktree_calls.append((project_key, branch))
+        return self.wt_root / f"{project_key}-brainstorm"
+
+    async def worktree_path(self, project_key):
+        return self.wt_root / f"{project_key}-brainstorm"
+
+    async def copy_template(self, worktree_path, project_key):
+        self.copy_calls.append((str(worktree_path), project_key))

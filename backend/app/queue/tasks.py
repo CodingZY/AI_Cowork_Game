@@ -6,8 +6,10 @@ from app.agent.prompts import BRAINSTORM_SYSTEM_PROMPT
 from app.agent.runtime import ClaudeRuntime
 from app.config.settings import get_settings
 from app.events.broker import EventBroker
+from app.git.service import GitService
+from app.git.template import ensure_template_pushed
 from app.persistence.db import get_sessionmaker
-from app.persistence.repo import AgentSessionRepo, ProjectRepo
+from app.persistence.repo import AgentSessionRepo, ProjectRepo, ProjectRepositoryRepo
 from app.schemas.event import CoworkEvent
 from app.workflow.engine import assert_can_brainstorm
 from app.workflow.states import ProjectStatus
@@ -62,6 +64,32 @@ async def run_brainstorm(ctx, project_id: int, prompt: str):
         # R2: EventBroker(session_factory=sm) — sessionmaker 是 callable，
         # `async with sm() as session:` 可用。
         broker = EventBroker(session_factory=sm, redis=r)
+
+        # --- Phase 2: git 前置（lock 内、broker 之后；发事件需 broker）---
+        git = GitService()
+        await git.ensure_clone()
+        await ensure_template_pushed(git)
+        branch = f"{settings.git_branch_prefix}/{p.project_key}-brainstorm"
+        wt = await git.worktree_add(p.project_key, branch)
+        await broker.publish(CoworkEvent(
+            project_id=project_id, type="git.worktree.added",
+            data={"project_id": project_id, "branch": branch, "path": str(wt)},
+            aggregate_type="git", aggregate_id=project_id,
+        ))
+        games_dir = wt / "games" / p.project_key
+        if not games_dir.exists():
+            await git.copy_template(wt, p.project_key)
+        claude_cwd = str(games_dir)
+        async with sm() as s:
+            prow = await ProjectRepositoryRepo(s).get_by_project(project_id)
+            if prow is None:
+                await ProjectRepositoryRepo(s).create(
+                    project_id=project_id, owner="", repository="",
+                    sub_path=f"games/{p.project_key}/",
+                )
+            await ProjectRepositoryRepo(s).set_branch(project_id, branch)
+            await s.commit()
+
         runtime = ClaudeRuntime()
         succeeded = False
         refused = False
@@ -71,13 +99,13 @@ async def run_brainstorm(ctx, project_id: int, prompt: str):
         async def _events():
             if prev_sid:
                 async for e in runtime.resume(
-                    prev_sid, prompt, workspace_root, project_id,
+                    prev_sid, prompt, claude_cwd, project_id,
                     AGENT_TYPE, BRAINSTORM_SYSTEM_PROMPT,
                 ):
                     yield e
             else:
                 async for e in runtime.start(
-                    prompt, workspace_root, project_id,
+                    prompt, claude_cwd, project_id,
                     AGENT_TYPE, BRAINSTORM_SYSTEM_PROMPT,
                 ):
                     yield e
