@@ -213,12 +213,18 @@ class GitService:
     async def ensure_clone(self) -> Path:
         """幂等：repo_dir 不存在则 clone 共享 repo（用 PAT URL），clone 后
         立即把 remote origin URL 改成不含 PAT 的（避免落 .git/config 明文）；
-        已存在则 git fetch origin。返回 repo_dir。"""
+        已存在则 git fetch origin。返回 repo_dir。
+        注：clone 空 repo（无提交）得无提交本地仓，HEAD unborn——首提交与
+        分支创建由 ensure_template_pushed 负责（见下，显式建 main）。"""
 
     async def ensure_template_pushed(self):
         """幂等：检查 repo_dir/template/ 是否存在；不存在则从后端自带
         backend/templates/game-template/ 复制到 repo_dir/template/，
-        commit + push（首启一次性）。"""
+        commit + push（首启一次性）。
+        空repo处理：若本地仓无任何提交（HEAD unborn，共享 repo 初始为空），
+        首提交前必须显式 `git checkout -b main`（或 `git symbolic-ref HEAD
+        refs/heads/main`）——git 2.37 默认 init.defaultBranch=master，不显式
+        建会生成 master 分支，导致后续 worktree_add(base=main) 失败。"""
 
     async def worktree_add(self, project_key, branch) -> Path:
         """git -C repo_dir worktree add -b {branch} <abs_wt_path> main。
@@ -415,8 +421,8 @@ GET    /api/projects/{id}/stream?after=<eid>       SSE（含 git.* 事件）
 
 ```ini
 # === Git（Phase 2，D2） ===
-GITHUB_REPO_URL=https://github.com/<owner>/<repo>.git   # 共享 monorepo repo
-GITHUB_PAT=<personal access token>                       # repo 作用域，push 用
+GITHUB_REPO_URL=https://github.com/CodingZY/Game_Template_Repo.git  # 共享 monorepo repo（用户已建，main 有 README）
+GITHUB_PAT=<personal access token>                       # repo 作用域，clone/push/tag 用
 WORKSPACE_ROOT=workspace                                  # 相对 repo 根
 GIT_BRANCH_PREFIX=agent                                   # worktree 分支前缀
 
@@ -450,6 +456,7 @@ GIT_BRANCH_PREFIX=agent                                   # worktree 分支前�
 | game-template 内容质量 | TS/Vite/Canvas 最小骨架，Phase 2 只需能落 git，不需能 build | Phase 2 template 只求结构完整 + 能 commit；build 验证留 Phase 5 |
 | 共享 repo 已有内容 | 用户手动建 repo 可能非空 | ensure_template_pushed 检查 template/ 是否存在，幂等；不覆盖已有 games/ |
 | 多 project 并发 clone | ensure_clone 全局幂等，多 task 并发可能重复 clone | repo_dir 存在则只 fetch（fetch 幂等）；首 clone 加文件锁或接受幂等竞态（clone 到临时目录后 rename） |
+| **共享 repo 初始为空** | 用户刚建 repo 时无提交（spike 实测 ls-remote 无 refs）；clone 得无提交本地仓 | ensure_template_pushed 首提交显式 `git checkout -b main`（git 2.37 默认 master，不显式则 worktree_add(base=main) 失败）；ensure_template_pushed 必在 worktree_add 前跑 |
 
 ---
 
