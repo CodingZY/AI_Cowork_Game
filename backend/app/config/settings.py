@@ -25,7 +25,10 @@ class Settings(BaseSettings):
     db_url: str
     redis_url: str = "redis://127.0.0.1:6379/0"
     arq_queue: str = "agent"
-    workspace_root: str = "Games"
+    workspace_root: str = "workspace"
+    github_repo_url: str = ""
+    github_pat: str = ""
+    git_branch_prefix: str = "agent"
 
     @classmethod
     def settings_customise_sources(
