@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import subprocess
 from pathlib import Path
 import pytest
 import pytest_asyncio
@@ -62,3 +63,34 @@ async def async_db_session():
         yield session
         await session.rollback()
     await engine.dispose()
+
+
+def _run(args, cwd=None):
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
+@pytest.fixture
+def local_bare_repo(tmp_path):
+    """本地 bare git repo（origin），含一个初始 main 提交，作 GitService clone 源。
+
+    用真实 git 子进程（非 mock），验证 worktree/clone/merge 在 Windows 的真实行为。
+    返回 (bare_path, origin_url)，origin_url 形如 file:///.../origin.git。
+    """
+    origin = tmp_path / "origin.git"
+    _run(["init", "--bare", str(origin)])
+    # 建一个有 main 提交的工作仓再推到 bare（让 origin 有 main 分支 + 内容）
+    seed = tmp_path / "seed"
+    _run(["init", str(seed)])
+    _run(["config", "user.email", "t@t.com"], cwd=str(seed))
+    _run(["config", "user.name", "tester"], cwd=str(seed))
+    (seed / "README.md").write_text("# seed\n", encoding="utf-8")
+    _run(["checkout", "-b", "main"], cwd=str(seed))
+    _run(["add", "-A"], cwd=str(seed))
+    _run(["commit", "-m", "seed init"], cwd=str(seed))
+    _run(["remote", "add", "origin", str(origin)], cwd=str(seed))
+    _run(["push", "-u", "origin", "main"], cwd=str(seed))
+    # git init --bare 默认 HEAD->master，但只推了 main，不设则 clone 警告
+    # "remote HEAD refers to nonexistent ref" 且不建本地 main，导致 rev-parse main 失败。
+    _run(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=str(origin))
+    return origin, f"file:///{origin.as_posix()}"
