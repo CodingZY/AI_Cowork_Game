@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent_session import AgentSession
 from app.models.event import Event
 from app.models.project import Project
+from app.models.project_repository import ProjectRepository
 from app.schemas.event import CoworkEvent
 
 
@@ -149,3 +150,53 @@ class AgentSessionRepo:
             .limit(1)
         )
         return (await self.session.execute(q)).scalar_one_or_none()
+
+
+class ProjectRepositoryRepo:
+    """project_repositories 表 CRUD（spec §5.3，D6）。"""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(
+        self,
+        project_id: int,
+        owner: str,
+        repository: str,
+        sub_path: str,
+        default_branch: str = "main",
+    ) -> ProjectRepository:
+        row = ProjectRepository(
+            project_id=project_id,
+            provider="github",
+            owner=owner,
+            repository=repository,
+            sub_path=sub_path,
+            default_branch=default_branch,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def get_by_project(self, project_id: int) -> Optional[ProjectRepository]:
+        return (
+            await self.session.execute(
+                select(ProjectRepository).where(
+                    ProjectRepository.project_id == project_id
+                )
+            )
+        ).scalar_one_or_none()
+
+    async def set_branch(self, project_id: int, branch: Optional[str]) -> None:
+        await self.session.execute(
+            update(ProjectRepository)
+            .where(ProjectRepository.project_id == project_id)
+            .values(current_branch=branch)
+        )
+
+    async def set_last_sha(self, project_id: int, sha: str) -> None:
+        await self.session.execute(
+            update(ProjectRepository)
+            .where(ProjectRepository.project_id == project_id)
+            .values(last_commit_sha=sha)
+        )
