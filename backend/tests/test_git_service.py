@@ -143,3 +143,38 @@ async def test_worktree_remove(local_bare_repo, tmp_path):
     assert await svc.worktree_path("k1") is None
     rc, out, err = await svc._git(["branch", "--list", "agent/k1-brainstorm"], cwd=str(svc.repo_dir))
     assert "agent/k1-brainstorm" not in out
+
+
+async def test_push_to_origin(local_bare_repo, tmp_path):
+    origin, url = local_bare_repo
+    svc = _make_service(tmp_path, origin_url=url)
+    await svc.ensure_clone(origin_url=url)
+    wt = await svc.worktree_add("k1", "agent/k1-brainstorm")
+    (wt / "games").mkdir(parents=True, exist_ok=True)
+    (wt / "games" / "k1").mkdir()
+    (wt / "games" / "k1" / "GDD.md").write_text("# game\n", encoding="utf-8")
+    await svc.commit(wt, "feat(F001): initial game + gdd")
+    await svc.merge_to_main("agent/k1-brainstorm")
+    pushed = await svc.push("origin", "main")
+    assert isinstance(pushed, str) and len(pushed) >= 7
+    # bare origin 的 main 现在有 games/k1/GDD.md
+    rc, out, err = await svc._git(["ls-tree", "main", "games/k1/"], cwd=str(origin))
+    assert "GDD.md" in out
+
+
+async def test_tag(local_bare_repo, tmp_path):
+    origin, url = local_bare_repo
+    svc = _make_service(tmp_path, origin_url=url)
+    await svc.ensure_clone(origin_url=url)
+    wt = await svc.worktree_add("k1", "agent/k1-brainstorm")
+    (wt / "games").mkdir(parents=True, exist_ok=True)
+    (wt / "games" / "k1").mkdir()
+    (wt / "games" / "k1" / "GDD.md").write_text("# game\n", encoding="utf-8")
+    await svc.commit(wt, "feat(F001): initial game + gdd")
+    await svc.merge_to_main("agent/k1-brainstorm")
+    await svc.push("origin", "main")
+    tag = await svc.tag("brainstorm-k1-v0")
+    assert tag == "brainstorm-k1-v0"
+    # bare origin 有该 tag
+    rc, out, err = await svc._git(["ls-remote", "--tags", "origin"], cwd=str(svc.repo_dir))
+    assert "brainstorm-k1-v0" in out

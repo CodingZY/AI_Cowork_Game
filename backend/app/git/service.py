@@ -168,3 +168,20 @@ class GitService:
         wt = self._worktree_dir(project_key)
         await self._git(["worktree", "remove", str(wt), "--force"], cwd=str(self.repo_dir))
         await self._git(["branch", "-d", branch], cwd=str(self.repo_dir))
+
+    async def push(self, remote: str = "origin", ref: str = "main") -> str:
+        """git -C repo_dir push {remote} {ref}（PAT 凭据经 extraheader，use_pat=True）。返回 pushed sha。"""
+        rc, out, err = await self._git(["push", remote, ref], cwd=str(self.repo_dir), use_pat=True)
+        if rc != 0:
+            raise RuntimeError(f"git push {remote} {ref} failed: {err}")
+        return await self.current_sha(ref)
+
+    async def tag(self, tag_name: str) -> str:
+        """git -C repo_dir tag {tag_name}; push origin {tag_name}。返回 tag 名。"""
+        rc, out, err = await self._git(["tag", tag_name], cwd=str(self.repo_dir))
+        if rc != 0:
+            raise RuntimeError(f"git tag {tag_name} failed: {err}")
+        rc, out, err = await self._git(["push", "origin", tag_name], cwd=str(self.repo_dir), use_pat=True)
+        if rc != 0:
+            raise RuntimeError(f"git push tag {tag_name} failed: {err}")
+        return tag_name
