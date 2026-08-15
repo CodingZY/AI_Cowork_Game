@@ -84,3 +84,87 @@ class GitService:
         if rc != 0:
             raise RuntimeError(f"git rev-parse {ref} failed: {err}")
         return out.strip()
+
+    def _worktree_dir(self, project_key: str) -> Path:
+        """worktree 物理路径：workspace/worktrees/{key}-brainstorm。"""
+        return self.settings.workspace_base / "worktrees" / f"{project_key}-brainstorm"
+
+    async def worktree_add(self, project_key: str, branch: str) -> Path:
+        """git -C repo_dir worktree add -b {branch} <abs_wt> main。幂等。
+
+        已存在则返回其路径；分支已存在但无 worktree 则 attach（worktree add <wt> <branch>）。
+        worktree 的 .git 是文件（指向主仓 .git/worktrees/...），.exists() 对文件也 True。
+        """
+        wt = self._worktree_dir(project_key)
+        if wt.exists() and (wt / ".git").exists():
+            return wt
+        self._worktree_dir(project_key).parent.mkdir(parents=True, exist_ok=True)
+        # 先查分支是否已存在
+        rc, out, err = await self._git(["branch", "--list", branch], cwd=str(self.repo_dir))
+        if branch in out:
+            # 分支在但 worktree 不在：attach
+            rc, out, err = await self._git(["worktree", "add", str(wt), branch], cwd=str(self.repo_dir))
+        else:
+            rc, out, err = await self._git(
+                ["worktree", "add", "-b", branch, str(wt), "main"], cwd=str(self.repo_dir)
+            )
+        if rc != 0:
+            raise RuntimeError(f"git worktree add failed: {err}")
+        return wt
+
+    async def worktree_path(self, project_key: str) -> Optional[Path]:
+        """查 worktree 是否存在，返回路径或 None。"""
+        wt = self._worktree_dir(project_key)
+        if wt.exists() and ((wt / ".git").exists() or (wt / ".git").is_file()):
+            return wt
+        return None
+
+    async def copy_template(self, worktree_path: Path, project_key: str) -> None:
+        """复制 worktree/template/* → worktree/games/{key}/（首次落游戏骨架）。"""
+        import shutil
+        src = worktree_path / "template"
+        dst = worktree_path / "games" / project_key
+        if not src.exists():
+            raise RuntimeError(f"template not found in worktree: {src}")
+        dst.mkdir(parents=True, exist_ok=True)
+        for item in src.iterdir():
+            if item.name == ".git":
+                continue
+            target = dst / item.name
+            if item.is_dir():
+                shutil.copytree(item, target, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, target)
+
+    async def commit(self, worktree_path: Path, message: str) -> str:
+        """git -C worktree add -A; commit -m {message}。返回 commit sha。"""
+        await self._git(["add", "-A"], cwd=str(worktree_path))
+        rc, out, err = await self._git(["commit", "-m", message], cwd=str(worktree_path))
+        if rc != 0:
+            # 无变更也算成功场景由调用方判断；此处有变更才 commit
+            if "nothing to commit" in (out + err):
+                pass
+            else:
+                raise RuntimeError(f"git commit failed: {err}")
+        rc, out, err = await self._git(["rev-parse", "HEAD"], cwd=str(worktree_path))
+        return out.strip()
+
+    async def merge_to_main(self, branch: str) -> str:
+        """git -C repo_dir checkout main; merge --no-ff {branch}。返回 merge sha。
+
+        冲突抛 GitConflict（spec §11）。
+        """
+        await self._git(["checkout", "main"], cwd=str(self.repo_dir))
+        rc, out, err = await self._git(["merge", "--no-ff", branch, "-m", f"merge {branch}"], cwd=str(self.repo_dir))
+        if rc != 0:
+            if "CONFLICT" in (out + err) or "conflict" in (out + err):
+                raise GitConflict(f"merge {branch} conflicted: {err}")
+            raise RuntimeError(f"git merge failed: {err}")
+        rc, out, err = await self._git(["rev-parse", "HEAD"], cwd=str(self.repo_dir))
+        return out.strip()
+
+    async def worktree_remove(self, project_key: str, branch: str) -> None:
+        """git -C repo_dir worktree remove <wt>; branch -d {branch}。"""
+        wt = self._worktree_dir(project_key)
+        await self._git(["worktree", "remove", str(wt), "--force"], cwd=str(self.repo_dir))
+        await self._git(["branch", "-d", branch], cwd=str(self.repo_dir))
