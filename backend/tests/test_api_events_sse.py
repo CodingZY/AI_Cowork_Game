@@ -144,6 +144,28 @@ async def test_stream_after_filter(sse_env):
     assert fake.closed is True
 
 
+async def test_stream_replays_git_events(sse_env, monkeypatch):
+    """git.* 事件落 events 表后，SSE history 回放可见（spec §7/§10）。
+
+    git.* 与 agent.* 走同一 events 表 + 同一 EventRepo.history + 同一 SSE 端点，
+    aggregate_type="git" 不影响回放（端点只按 project_id + after_id 过滤）。
+    """
+    sm, monkeypatch = sse_env
+    pid, _rows = await _seed_events(
+        sm, n=1, event_types=["git.committed"]
+    )
+    fake = FakeStreamRedis(xread_responses=[[]])
+    _install_redis_fake(monkeypatch, fake)
+
+    chunks, body = await _drain_until_keepalive(
+        event_stream(pid, 0, sm, get_settings())
+    )
+    data_lines = [l for l in body.splitlines() if l.startswith("data: ")]
+    assert len(data_lines) == 1
+    assert "git.committed" in body
+    assert fake.closed is True
+
+
 async def test_stream_realtime_from_redis(sse_env):
     sm, monkeypatch = sse_env
     pid, _rows = await _seed_events(sm, n=1)
