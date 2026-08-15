@@ -13,19 +13,12 @@ from app.models import Base
 @pytest.fixture
 async def client(tmp_path, monkeypatch):
     """httpx AsyncClient 走 ASGITransport，DB 用 sqlite in-memory + StaticPool
-    （多请求共享同一连接），session 依赖 override。ensure_workspace 指向 tmp_path
-    避免真建 Games/ 目录。lifespan 在 ASGITransport 下不跑，故手动 create_all。
+    （多请求共享同一连接），session 依赖 override。lifespan 在 ASGITransport 下
+    不跑，故手动 create_all。
+
+    Phase 2：project_service.create 不再调 ensure_workspace 建目录（workspace_root
+    是相对路径字符串，worktree 由 brainstorm task 建），故无需 monkeypatch 避建目录。
     """
-    # 避免真建 Games/：project_service.create 内调 ensure_workspace
-    from app.services import project_service
-
-    def fake_ensure_workspace(project_key: str, base=None):
-        p = tmp_path / project_key
-        p.mkdir(parents=True, exist_ok=True)
-        return p
-
-    monkeypatch.setattr(project_service, "ensure_workspace", fake_ensure_workspace)
-
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
