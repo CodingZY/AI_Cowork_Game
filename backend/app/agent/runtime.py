@@ -51,7 +51,7 @@ class ClaudeRuntime:
         self.claude_bin = _resolve_claude_bin()
         self.proc: Optional[asyncio.subprocess.Process] = None
 
-    def _build_cmd(self, prompt, resume_sid=None, system_prompt=None) -> list[str]:
+    def _build_cmd(self, prompt, resume_sid=None, system_prompt=None, plugin_dir=None) -> list[str]:
         # --bare 强制：不带会背 26707 token 宿主上下文 + hook 报错 + refusal（spike）
         # 首元素用解析出的 claude.exe 绝对路径（Windows，见 _resolve_claude_bin）
         cmd = [
@@ -63,6 +63,8 @@ class ClaudeRuntime:
         ]
         if system_prompt:
             cmd += ["--append-system-prompt", system_prompt]
+        if plugin_dir:
+            cmd += ["--plugin-dir", plugin_dir]
         if resume_sid:
             cmd += ["--resume", resume_sid]
         return cmd
@@ -102,8 +104,9 @@ class ClaudeRuntime:
         agent_type="brainstorm",
         resume_sid=None,
         system_prompt=None,
+        plugin_dir=None,
     ) -> AsyncIterator:
-        cmd = self._build_cmd(prompt, resume_sid, system_prompt)
+        cmd = self._build_cmd(prompt, resume_sid, system_prompt, plugin_dir)
         env = self._build_env()
         parser = ClaudeEventParser(project_id=project_id, agent_type=agent_type)
         # R4：cwd 接绝对路径 str，runtime 不自己拼，session 按 cwd 存（Task10 控制 cwd）
@@ -119,9 +122,10 @@ class ClaudeRuntime:
         project_id,
         agent_type="brainstorm",
         system_prompt=None,
+        plugin_dir=None,
     ) -> AsyncIterator:
         async for evt in self._run(
-            prompt, cwd, project_id, agent_type, None, system_prompt
+            prompt, cwd, project_id, agent_type, None, system_prompt, plugin_dir
         ):
             yield evt
 
@@ -133,9 +137,10 @@ class ClaudeRuntime:
         project_id,
         agent_type="brainstorm",
         system_prompt=None,
+        plugin_dir=None,
     ) -> AsyncIterator:
         async for evt in self._run(
-            prompt, cwd, project_id, agent_type, session_id, system_prompt
+            prompt, cwd, project_id, agent_type, session_id, system_prompt, plugin_dir
         ):
             yield evt
 

@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     github_repo_url: str = ""
     github_pat: str = ""
     git_branch_prefix: str = "agent"
+    game_skills_dir: str = "backend/game-skills"
 
     @classmethod
     def settings_customise_sources(
