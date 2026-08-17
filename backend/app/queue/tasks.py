@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import redis.asyncio as aioredis
 
-from app.agent.prompts import BRAINSTORM_SYSTEM_PROMPT
+from app.agent.prompts import (
+    BRAINSTORM_SYSTEM_PROMPT,
+    GDD_BRAINSTORM_SYSTEM_PROMPT,
+    GDD_GEN_SYSTEM_PROMPT,
+)
 from app.agent.runtime import ClaudeRuntime
-from app.config.settings import get_settings
+from app.config.settings import REPO_ROOT, get_settings
 from app.events.broker import EventBroker
 from app.git.service import GitService
 from app.git.template import ensure_template_pushed
@@ -16,47 +20,42 @@ from app.workflow.states import ProjectStatus
 
 # agent_type 标签（agent_sessions.agent_type 列 + last_claude_session 查询用）
 AGENT_TYPE = "BRAINSTORM"
+GDD_GEN_TYPE = "GDD_GEN"
 
 
 async def run_brainstorm(ctx, project_id: int, prompt: str):
-    """Arq task：编排 brainstorm 阶段全流程。
+    """Arq task：编排 brainstorm 阶段全流程（Phase 3a spec §5.4，两次 spawn）。
 
-    流程（spec §5.6 + 控制器裁决）：
-      1. 状态校验（assert_can_brainstorm）→ 置 BRAINSTORMING → 预建 agent_session
-      2. resume 判定：last_claude_session 有 COMPLETED 则 resume，否则 start
-      3. acquire project lock（Redis TTL 30min）
-      4. 逐事件 broker.publish（先落库后广播，R10 不补偿）
-      5. 三态收尾：succeeded→COMPLETED(项目保持 BRAINSTORMING)、
-         refused→FAILED、else→FAILED
+    流程：
+      1. 状态校验（assert_can_brainstorm）→ 置 BRAINSTORMING
+      2. acquire project lock（Redis TTL 30min）
+      3. git 前置（ensure_clone/ensure_template_pushed/worktree_add/copy_template/set_branch）
+      4. spawn #1（02 brainstorm，BRAINSTORM agent_session）→ 落 .brainstorm-concept.md
+         spawn #2（03 gdd-generator，GDD_GEN agent_session）→ 落 GDD.md + gdd-manifest.json
+         两轮都经 --plugin-dir game-skills 挂载 skills；逐事件 broker.publish。
+      5. 三态收尾（spec §5.4）：两轮都 succeeded → agent_session COMPLETED + project
+         GDD_REVIEW；任一轮 refused/runtime_error → FAILED。
       6. release lock
 
     ctx: Arq worker context（Phase 1 不使用）。
-    prompt: 用户 idea（Task 11 端点 enqueue 时传入；resume 也用新 prompt）。
+    prompt: 用户 idea（Task 11 端点 enqueue 时传入）。
+
+    多轮修正：GDD_REVIEW 时再 POST /brainstorm 仍走两次 spawn（重新 02+03），
+    不 resume 旧 session（spec D3：02/03 都是 start 新 session）。
     """
     settings = get_settings()
     sm = get_sessionmaker()
 
-    # 1. 状态校验 + 置 BRAINSTORMING + 预建 agent_session
+    # 1. 状态校验 + 置 BRAINSTORMING（agent_session 在 _spawn_once 内按轮预建）
     async with sm() as s:
         p = await ProjectRepo(s).get(project_id)
         if p is None:
             return {"failed": True, "reason": "project_not_found"}
-        workspace_root = p.workspace_root
         assert_can_brainstorm(p.status)
         await ProjectRepo(s).set_status(project_id, ProjectStatus.BRAINSTORMING)
-        agent_session = await AgentSessionRepo(s).create(
-            project_id, AGENT_TYPE, workspace_root
-        )
         await s.commit()
-    as_id = agent_session.id
 
-    # 2. resume 判定：有 last COMPLETED session 则 resume
-    async with sm() as s:
-        prev_sid = await AgentSessionRepo(s).last_claude_session(
-            project_id, AGENT_TYPE
-        )
-
-    # 3. acquire project lock（Redis TTL 30min）
+    # 2. acquire project lock（Redis TTL 30min）
     r = aioredis.from_url(settings.redis_url)
     lock = r.lock(f"lock:project:{project_id}:brainstorm", timeout=1800)
     await lock.acquire()
@@ -90,75 +89,81 @@ async def run_brainstorm(ctx, project_id: int, prompt: str):
             await ProjectRepositoryRepo(s).set_branch(project_id, branch)
             await s.commit()
 
+        plugin_dir_abs = str(REPO_ROOT / settings.game_skills_dir)
         runtime = ClaudeRuntime()
-        succeeded = False
         refused = False
-        last_sid = None
         runtime_err = None
+        sessions = []  # [(as_id, agent_type)]，三态收尾统一 finish
 
-        async def _events():
-            if prev_sid:
-                async for e in runtime.resume(
-                    prev_sid, prompt, claude_cwd, project_id,
-                    AGENT_TYPE, BRAINSTORM_SYSTEM_PROMPT,
+        async def _spawn_once(spawn_prompt, agent_type, system_prompt) -> bool:
+            """预建 agent_session + spawn 一轮 runtime.start，逐事件 broker.publish。
+
+            返回本轮是否拿到 agent.session.completed（True）。refused/runtime_error
+            经 nonlocal 记录，供三态收尾判定。spawn 失败/子进程崩溃（向上抛）
+            被捕获补发 agent.session.failed，仍走三态收尾，避免 agent_session 泄漏
+            RUNNING、project 卡死 BRAINSTORMING。
+            """
+            nonlocal refused, runtime_err
+            async with sm() as s2:
+                asess = await AgentSessionRepo(s2).create(project_id, agent_type, claude_cwd)
+                await s2.commit()
+            asid = asess.id
+            sessions.append((asid, agent_type))
+            spawn_ok = False
+            try:
+                async for evt in runtime.start(
+                    spawn_prompt, claude_cwd, project_id,
+                    agent_type=agent_type, system_prompt=system_prompt,
+                    plugin_dir=plugin_dir_abs,
                 ):
-                    yield e
-            else:
-                async for e in runtime.start(
-                    prompt, claude_cwd, project_id,
-                    AGENT_TYPE, BRAINSTORM_SYSTEM_PROMPT,
-                ):
-                    yield e
+                    evt.aggregate_id = asid  # 关联到本 agent_session
+                    if evt.type == "agent.session.completed":
+                        spawn_ok = True
+                    elif evt.type == "agent.refused":
+                        refused = True
+                    await broker.publish(evt)
+            except Exception as e:
+                runtime_err = f"{type(e).__name__}: {e}"
+                await broker.publish(CoworkEvent(
+                    project_id=project_id,
+                    type="agent.session.failed",
+                    data={"reason": "runtime_error", "error": runtime_err},
+                    aggregate_id=asid,
+                ))
+            return spawn_ok
 
-        # spawn 失败/子进程崩溃/IO 错误等不能向上抛——否则三态收尾被跳过，
-        # agent_session 泄漏 RUNNING、project 卡死 BRAINSTORMING。捕获后补发
-        # agent.session.failed 事件（spec §5.6 协议/IO 错误），仍走三态收尾。
-        try:
-            async for evt in _events():
-                evt.aggregate_id = as_id  # 关联到本 agent_session
-                if evt.type == "agent.session.started":
-                    last_sid = evt.data.get("session_id")
-                elif evt.type == "agent.session.completed":
-                    succeeded = True
-                elif evt.type == "agent.refused":
-                    refused = True
-                await broker.publish(evt)
-        except Exception as e:
-            runtime_err = f"{type(e).__name__}: {e}"
-            await broker.publish(CoworkEvent(
-                project_id=project_id,
-                type="agent.session.failed",
-                data={"reason": "runtime_error", "error": runtime_err},
-                aggregate_id=as_id,
-            ))
+        # spawn #1: 02 brainstorm → 落 .brainstorm-concept.md
+        ok1 = await _spawn_once(
+            f"用户游戏创意：{prompt}。请调用 /02-game-brainstorm 澄清需求并落 .brainstorm-concept.md。",
+            AGENT_TYPE, GDD_BRAINSTORM_SYSTEM_PROMPT,
+        )
+        # 仅当 #1 完整成功（completed、无 refused、无 runtime_error）才跑 #2
+        if ok1 and not refused and not runtime_err:
+            # spawn #2: 03 gdd-generator → 落 GDD.md(17节) + gdd-manifest.json
+            ok2 = await _spawn_once(
+                "请调用 /03-gdd-generator 读取 .brainstorm-concept.md 生成 GDD.md(17节) + gdd-manifest.json。",
+                GDD_GEN_TYPE, GDD_GEN_SYSTEM_PROMPT,
+            )
+            succeeded_all = ok2
+        else:
+            succeeded_all = False
 
-        # 4. 三态收尾（spec §5.6）
+        # 4. 三态收尾（spec §5.4：成功置 GDD_REVIEW，非 BRAINSTORMING）
         if refused:
-            status, proj_status, reason = (
-                "FAILED", ProjectStatus.FAILED, "content_review",
-            )
-        elif succeeded:
-            # 成功→COMPLETED，project 保持 BRAINSTORMING（可再 resume）
-            status, proj_status, reason = (
-                "COMPLETED", ProjectStatus.BRAINSTORMING, None,
-            )
+            status, proj_status = "FAILED", ProjectStatus.FAILED
+        elif succeeded_all:
+            status, proj_status = "COMPLETED", ProjectStatus.GDD_REVIEW
         else:
             # 无 completed 也无 refused（spawn 失败/子进程崩溃等）→ FAILED
-            status, proj_status, reason = (
-                "FAILED", ProjectStatus.FAILED,
-                f"runtime_error: {runtime_err}" if runtime_err else "runtime_error",
-            )
+            status, proj_status = "FAILED", ProjectStatus.FAILED
         async with sm() as s:
-            if last_sid:
-                await AgentSessionRepo(s).bind_claude_session(as_id, last_sid)
-            await AgentSessionRepo(s).finish(as_id, status)
+            for asid, _ in sessions:
+                await AgentSessionRepo(s).finish(asid, status)
             await ProjectRepo(s).set_status(project_id, proj_status)
             await s.commit()
         return {
-            "session_id": last_sid,
-            "succeeded": succeeded,
+            "succeeded": succeeded_all,
             "refused": refused,
-            "reason": reason,
             "error": runtime_err,
         }
     finally:
