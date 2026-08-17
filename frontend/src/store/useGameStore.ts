@@ -35,6 +35,8 @@ import {
   newBrainstormSeed,
   rogueBrainstormChat,
 } from '@/services/mockData'
+import * as api from '@/api/backend'
+import type { Question, Answer, GddContent, CoworkEvent } from '@/api/backend'
 
 // ── 头脑风暴脚本：依据已发出的 user 消息数决定 Agent 下一句 ──
 function nextAgentReply(userTurnCount: number): {
@@ -154,6 +156,26 @@ interface GameState {
   rollbackVersion: (tag: string) => void
   openVersionModal: () => void
   closeVersionModal: () => void
+
+  // 阶段1真后端（与 mock 并存，不删 mock）
+  realProject: api.ProjectRead | null
+  realQuestions: Question[]
+  realAnswers: Answer[]
+  gddContent: GddContent | null
+  gddMd: string // 可编辑的 GDD.md
+  sseClose?: () => void
+
+  // actions: real backend phase1
+  createRealProject: (name: string, idea: string) => Promise<void>
+  sendIdea: (idea: string) => Promise<void>
+  submitRealAnswers: () => Promise<void>
+  loadGdd: () => Promise<void>
+  setGddMd: (text: string) => void
+  submitRealGdd: () => Promise<void>
+  approveRealGdd: () => Promise<void>
+  finalizeRealGdd: () => Promise<void>
+  handleSSEEvent: (e: CoworkEvent) => void
+  setRealAnswer: (qid: string, answer: string) => void
 }
 
 // ── 纯函数 helper：操作当前游戏的素材数组 ─────────────────
@@ -501,6 +523,80 @@ export const useGameStore = create<GameState>()((set, get) => ({
 
   openVersionModal: () => set({ versionModalOpen: true }),
   closeVersionModal: () => set({ versionModalOpen: false }),
+
+  // ── real backend phase1（与 mock 并存）────────────────────
+  realProject: null,
+  realQuestions: [],
+  realAnswers: [],
+  gddContent: null,
+  gddMd: '',
+
+  createRealProject: async (name, idea) => {
+    const p = await api.createProject(name, idea)
+    set({ realProject: p, realQuestions: [], realAnswers: [], gddContent: null, gddMd: '' })
+  },
+
+  sendIdea: async (idea) => {
+    const p = get().realProject
+    if (!p) return
+    await api.enqueueBrainstorm(p.id, idea)
+    // SSE 在 SuperpowerChat 用 useSSE 接，事件调 handleSSEEvent
+  },
+
+  handleSSEEvent: (e) => {
+    if (e.type === 'brainstorm.questions_ready') {
+      set({ realQuestions: (e.data?.questions ?? []) as Question[], realAnswers: [] })
+    } else if (e.type === 'gdd.review_ready') {
+      void get().loadGdd()
+    } else if (e.type === 'gdd.check.passed') {
+      set((s) => ({ realProject: s.realProject ? { ...s.realProject, status: 'GDD_APPROVED' } : null }))
+    } else if (e.type === 'gdd.check.failed') {
+      set((s) => ({ realProject: s.realProject ? { ...s.realProject, status: 'GDD_REVIEW' } : null }))
+    } else if (e.type === 'git.tagged') {
+      set((s) => ({ realProject: s.realProject ? { ...s.realProject, status: 'BRAINSTORMED' } : null }))
+    }
+    // agent.message.delta 等：阶段1简化，不显示 02/03 文本流，只看状态
+  },
+
+  loadGdd: async () => {
+    const p = get().realProject
+    if (!p) return
+    const g = await api.getGdd(p.id)
+    set({ gddContent: g, gddMd: g.gdd_md })
+  },
+
+  setGddMd: (text) => set({ gddMd: text }),
+
+  submitRealAnswers: async () => {
+    const p = get().realProject
+    if (!p) return
+    await api.submitAnswer(p.id, get().realAnswers)
+  },
+
+  submitRealGdd: async () => {
+    const p = get().realProject
+    if (!p) return
+    await api.submitGdd(p.id, get().gddMd)
+  },
+
+  approveRealGdd: async () => {
+    const p = get().realProject
+    if (!p) return
+    await api.approveGdd(p.id)
+  },
+
+  finalizeRealGdd: async () => {
+    const p = get().realProject
+    if (!p) return
+    await api.finalizeGdd(p.id)
+  },
+
+  setRealAnswer: (qid, answer) => {
+    set((s) => {
+      const rest = s.realAnswers.filter((a) => a.question_id !== qid)
+      return { realAnswers: [...rest, { question_id: qid, answer }] }
+    })
+  },
 }))
 
 // ── 选择器 hooks ────────────────────────────────────────────
