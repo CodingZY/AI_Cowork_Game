@@ -4,17 +4,19 @@ import redis.asyncio as aioredis
 
 from app.agent.prompts import (
     BRAINSTORM_SYSTEM_PROMPT,
+    GDD_BRAINSTORM_QUESTIONS_PROMPT,
     GDD_BRAINSTORM_SYSTEM_PROMPT,
     GDD_CHECK_SYSTEM_PROMPT,
     GDD_GEN_SYSTEM_PROMPT,
 )
+from app.agent.questions_parser import parse_questions
 from app.agent.runtime import ClaudeRuntime
 from app.config.settings import REPO_ROOT, get_settings
 from app.events.broker import EventBroker
 from app.git.service import GitService
 from app.git.template import ensure_template_pushed
 from app.persistence.db import get_sessionmaker
-from app.persistence.repo import AgentSessionRepo, ProjectRepo, ProjectRepositoryRepo
+from app.persistence.repo import AgentSessionRepo, ProjectRepo, ProjectRepositoryRepo, QuestionRepo
 from app.schemas.event import CoworkEvent
 from app.workflow.engine import (
     assert_can_brainstorm,
@@ -172,6 +174,109 @@ async def run_brainstorm(ctx, project_id: int, prompt: str):
             "refused": refused,
             "error": runtime_err,
         }
+    finally:
+        await lock.release()
+        await r.close()
+
+
+async def run_brainstorm_questions(ctx, project_id: int, idea: str):
+    """job1：spawn 02 出题 → 解析存表 → brainstorm.questions_ready → BRAINSTORMING（等答）。
+
+    git 前置（worktree）复用 Phase2；02 result 文本经 parse_questions 成结构化问题存
+    brainstorm_questions 表；refused/runtime_error/无 result_text → agent_session FAILED +
+    project FAILED。成功则 agent_session COMPLETED + project 保持 BRAINSTORMING（等答）。
+    """
+    settings = get_settings()
+    sm = get_sessionmaker()
+
+    # 1. 状态校验 + 置 BRAINSTORMING
+    async with sm() as s:
+        p = await ProjectRepo(s).get(project_id)
+        if p is None:
+            return {"failed": True, "reason": "project_not_found"}
+        assert_can_brainstorm(p.status)
+        await ProjectRepo(s).set_status(project_id, ProjectStatus.BRAINSTORMING)
+        await s.commit()
+    project_key = p.project_key
+
+    # 2. acquire project lock（Redis TTL 30min）
+    r = aioredis.from_url(settings.redis_url)
+    lock = r.lock(f"lock:project:{project_id}:brainstorm", timeout=1800)
+    await lock.acquire()
+    try:
+        broker = EventBroker(session_factory=sm, redis=r)
+
+        # 3. git 前置：ensure_clone + ensure_template_pushed + worktree_add + 事件 + set_branch
+        git = GitService()
+        await git.ensure_clone()
+        await ensure_template_pushed(git)
+        branch = f"{settings.git_branch_prefix}/{project_key}-brainstorm"
+        wt = await git.worktree_add(project_key, branch)
+        await broker.publish(CoworkEvent(
+            project_id=project_id, type="git.worktree.added",
+            data={"project_id": project_id, "branch": branch, "path": str(wt)},
+            aggregate_type="git", aggregate_id=project_id,
+        ))
+        claude_cwd = str(wt / "games" / project_key)
+        async with sm() as s:
+            prow = await ProjectRepositoryRepo(s).get_by_project(project_id)
+            if prow is None:
+                await ProjectRepositoryRepo(s).create(
+                    project_id=project_id, owner="", repository="",
+                    sub_path=f"games/{project_key}/",
+                )
+            await ProjectRepositoryRepo(s).set_branch(project_id, branch)
+            await s.commit()
+
+        # 4. spawn 02：预建 agent_session + 逐事件 broker.publish，抓 completed.result
+        plugin_dir_abs = str(REPO_ROOT / settings.game_skills_dir)
+        runtime = ClaudeRuntime()
+        result_text = None
+        refused = False
+        runtime_err = None
+        async with sm() as s:
+            asess = await AgentSessionRepo(s).create(project_id, AGENT_TYPE, claude_cwd)
+            await s.commit()
+        asid = asess.id
+        try:
+            async for evt in runtime.start(
+                f"用户游戏创意：{idea}。请调用 /02-game-brainstorm 产出一批带选项的澄清问题。",
+                claude_cwd, project_id, agent_type=AGENT_TYPE,
+                system_prompt=GDD_BRAINSTORM_QUESTIONS_PROMPT, plugin_dir=plugin_dir_abs,
+            ):
+                evt.aggregate_id = asid
+                if evt.type == "agent.session.completed":
+                    result_text = evt.data.get("result", "")
+                elif evt.type == "agent.refused":
+                    refused = True
+                await broker.publish(evt)
+        except Exception as e:
+            runtime_err = f"{type(e).__name__}: {e}"
+            await broker.publish(CoworkEvent(
+                project_id=project_id, type="agent.session.failed",
+                data={"reason": "runtime_error", "error": runtime_err},
+                aggregate_id=asid,
+            ))
+
+        # 5. 三态收尾：refused/runtime_err/无 result_text → FAILED；成功 → 解析存表 + COMPLETED
+        if refused or runtime_err or not result_text:
+            async with sm() as s:
+                await AgentSessionRepo(s).finish(asid, "FAILED")
+                await ProjectRepo(s).set_status(project_id, ProjectStatus.FAILED)
+                await s.commit()
+            return {"succeeded": False, "refused": refused, "error": runtime_err}
+
+        questions = parse_questions(result_text)
+        async with sm() as s:
+            await QuestionRepo(s).create(project_id, 1, questions)
+            await AgentSessionRepo(s).finish(asid, "COMPLETED")
+            await s.commit()
+        await broker.publish(CoworkEvent(
+            project_id=project_id, type="brainstorm.questions_ready",
+            data={"project_id": project_id, "questions": questions},
+            aggregate_type="brainstorm", aggregate_id=project_id,
+        ))
+        return {"succeeded": True, "questions": questions}
     finally:
         await lock.release()
         await r.close()
