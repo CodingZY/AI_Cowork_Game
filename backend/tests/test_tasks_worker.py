@@ -9,8 +9,9 @@ from app.models.agent_session import AgentSession
 from app.models.event import Event
 from app.persistence.repo import AgentSessionRepo, ProjectRepo
 from app.queue.tasks import run_brainstorm
-from app.schemas.event import CoworkEvent
+from app.schemas.event import CoworkEvent, _new_event_id
 from app.workflow.engine import WorkflowBlocked
+from app.workflow.states import ProjectStatus
 
 from tests.conftest import FakeGitService
 
@@ -64,26 +65,41 @@ class FakeAioredis:
 
 
 class FakeRuntime:
-    """Fake ClaudeRuntime: records start/resume call, yields preset events."""
+    """Fake ClaudeRuntime：记录 start/resume 调用，每次 start yield 一组预设事件。
+
+    Phase 3a run_brainstorm 两次 spawn（02 BRAINSTORM + 03 GDD_GEN），每次都调
+    runtime.start(..., plugin_dir=...)，故 start 需接 plugin_dir 且支持多次调用。
+    spawn_count/agent_types/called 供回归断言"两次 start、不调 resume"。
+    """
 
     def __init__(self, evts):
         self.evts = evts
-        self.called = None
+        self.called = []  # ["start", "start", ...] 或含 "resume"
         self.resume_sid = None
         self.cwd = None
+        self.spawn_count = 0
+        self.agent_types = []
 
-    async def start(self, prompt, cwd, project_id, agent_type="brainstorm", system_prompt=None):
-        self.called = "start"
+    async def start(self, prompt, cwd, project_id, agent_type="brainstorm",
+                    system_prompt=None, plugin_dir=None):
+        self.called.append("start")
         self.cwd = cwd
+        self.spawn_count += 1
+        self.agent_types.append(agent_type)
         for e in self.evts:
-            yield e
+            # 每次调用 yield 副本（新 event_id）：events.event_id 唯一约束，
+            # 两次 spawn 复用同一 CoworkEvent 会触发 IntegrityError 被兜底成 runtime_err
+            yield e.model_copy(update={"event_id": _new_event_id()})
 
-    async def resume(self, session_id, prompt, cwd, project_id, agent_type="brainstorm", system_prompt=None):
-        self.called = "resume"
+    async def resume(self, session_id, prompt, cwd, project_id, agent_type="brainstorm",
+                     system_prompt=None, plugin_dir=None):
+        self.called.append("resume")
         self.resume_sid = session_id
         self.cwd = cwd
+        self.spawn_count += 1
+        self.agent_types.append(agent_type)
         for e in self.evts:
-            yield e
+            yield e.model_copy(update={"event_id": _new_event_id()})
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +168,7 @@ async def _create_project(sm, key="demo", status="CREATED"):
 
 
 async def test_run_brainstorm_success(db_sm, fake_aioredis, monkeypatch):
-    """成功路径：CREATED→BRAINSTORMING→COMPLETED，project 保持 BRAINSTORMING。"""
+    """成功路径：CREATED→BRAINSTORMING→两次 spawn(02+03)→GDD_REVIEW。"""
     monkeypatch.setattr("app.queue.tasks.get_sessionmaker", lambda: db_sm)
     monkeypatch.setattr("app.queue.tasks.aioredis", fake_aioredis)
     fake_git = FakeGitService()
@@ -174,42 +190,49 @@ async def test_run_brainstorm_success(db_sm, fake_aioredis, monkeypatch):
 
     result = await run_brainstorm(ctx={}, project_id=pid, prompt="种田游戏")
 
+    # Phase 3a return dict：succeeded/refused/error（无 session_id/reason）
     assert result["succeeded"] is True
     assert result["refused"] is False
-    assert result["session_id"] == "s1"
-    assert result["reason"] is None
+    assert result["error"] is None
+    # 两次 start（02 BRAINSTORM + 03 GDD_GEN），不调 resume
+    assert fake_rt.spawn_count == 2
+    assert fake_rt.agent_types == ["BRAINSTORM", "GDD_GEN"]
 
     async with db_sm() as s:
-        # agent_session: COMPLETED + bound claude_session_id
-        ags = (
+        # 两个 agent_session（BRAINSTORM + GDD_GEN），都 COMPLETED
+        ags_rows = (
             await s.execute(
-                select(AgentSession).where(AgentSession.project_id == pid)
+                select(AgentSession)
+                .where(AgentSession.project_id == pid)
+                .order_by(AgentSession.id)
             )
-        ).scalars().first()
-        assert ags is not None
-        assert ags.status == "COMPLETED"
-        assert ags.claude_session_id == "s1"
-        assert ags.agent_type == "BRAINSTORM"
+        ).scalars().all()
+        assert len(ags_rows) == 2
+        assert ags_rows[0].agent_type == "BRAINSTORM"
+        assert ags_rows[1].agent_type == "GDD_GEN"
+        for a in ags_rows:
+            assert a.status == "COMPLETED"
 
-        # project: kept BRAINSTORMING (可再 resume)
+        # project: 末尾置 GDD_REVIEW（非 BRAINSTORMING）
         proj = await ProjectRepo(s).get(pid)
-        assert proj.status == "BRAINSTORMING"
+        assert proj.status == ProjectStatus.GDD_REVIEW.value
 
-        # events: 4 rows (3 agent + 1 git.worktree.added)
+        # events: 7 rows（两次 spawn 各 started/delta/completed = 6 agent + 1 git）
         rows = (
             await s.execute(select(Event).where(Event.project_id == pid))
         ).scalars().all()
-        assert len(rows) == 4
-        # agent 事件 aggregate_id 关联到 agent_session；git 事件 aggregate_type="git"
+        assert len(rows) == 7
+        # agent 事件 aggregate_id 关联到各自 agent_session；git 事件 aggregate_type="git"
         agent_rows = [r for r in rows if r.aggregate_type != "git"]
-        assert len(agent_rows) == 3
-        for r in agent_rows:
-            assert r.aggregate_id == ags.id
+        assert len(agent_rows) == 6
+        as1, as2 = ags_rows[0].id, ags_rows[1].id
+        assert sum(1 for r in agent_rows if r.aggregate_id == as1) == 3
+        assert sum(1 for r in agent_rows if r.aggregate_id == as2) == 3
 
-        # broadcast: FakeRedis stream 有 4 条
+        # broadcast: FakeRedis stream 有 7 条
         stream = fake_aioredis._redis.streams.get(f"stream:project:{pid}")
         assert stream is not None
-        assert len(stream) == 4
+        assert len(stream) == 7
 
 
 async def test_run_brainstorm_refusal(db_sm, fake_aioredis, monkeypatch):
@@ -232,8 +255,10 @@ async def test_run_brainstorm_refusal(db_sm, fake_aioredis, monkeypatch):
     result = await run_brainstorm(ctx={}, project_id=pid, prompt="敏感内容")
 
     assert result["refused"] is True
-    assert result["reason"] == "content_review"
     assert result["succeeded"] is False
+    assert result["error"] is None
+    # spawn #1 refused → 不跑 spawn #2
+    assert fake_rt.spawn_count == 1
 
     async with db_sm() as s:
         ags = (
@@ -248,7 +273,10 @@ async def test_run_brainstorm_refusal(db_sm, fake_aioredis, monkeypatch):
 
 
 async def test_run_brainstorm_resume(db_sm, fake_aioredis, monkeypatch):
-    """resume 路径：有 COMPLETED session → runtime.resume 被调用，session_id=prev-sid。"""
+    """Phase 3a：run_brainstorm 不再 resume 旧 session（spec D3），02/03 都 start 新 session。
+
+    预置 COMPLETED session（Phase 2 会 resume 的场景）→ 验两次 start、不调 resume。
+    """
     monkeypatch.setattr("app.queue.tasks.get_sessionmaker", lambda: db_sm)
     monkeypatch.setattr("app.queue.tasks.aioredis", fake_aioredis)
     fake_git = FakeGitService()
@@ -257,7 +285,7 @@ async def test_run_brainstorm_resume(db_sm, fake_aioredis, monkeypatch):
 
     pid = await _create_project(db_sm, key="resumeproj")
 
-    # 预置一个 COMPLETED 的 agent_session（有 claude_session_id）
+    # 预置一个 COMPLETED 的 agent_session（Phase 2 会 resume，阶段1 不再 resume）
     async with db_sm() as s:
         prev = await AgentSessionRepo(s).create(
             pid, "BRAINSTORM", "Games/resumeproj"
@@ -276,8 +304,10 @@ async def test_run_brainstorm_resume(db_sm, fake_aioredis, monkeypatch):
 
     result = await run_brainstorm(ctx={}, project_id=pid, prompt="继续设计")
 
-    assert fake_rt.called == "resume"
-    assert fake_rt.resume_sid == "prev-sid"
+    # 两次 start（BRAINSTORM + GDD_GEN），不调 resume（spec D3）
+    assert fake_rt.spawn_count == 2
+    assert fake_rt.called == ["start", "start"]
+    assert fake_rt.agent_types == ["BRAINSTORM", "GDD_GEN"]
     assert result["succeeded"] is True
 
 
@@ -309,7 +339,11 @@ async def test_run_brainstorm_project_not_found(db_sm, fake_aioredis, monkeypatc
 
 
 async def test_run_brainstorm_runtime_error(db_sm, fake_aioredis, monkeypatch):
-    """runtime 异常路径：只有 session.started 无 completed/refused → FAILED + runtime_error。"""
+    """无 completed（子进程崩溃/异常终止）→ spawn_ok=False → succeeded_all=False → project FAILED。
+
+    Phase 3a：FakeRuntime.start 已接 plugin_dir，不再 TypeError 兜底；此处真正模拟
+    "只 yield started 无 completed" → _spawn_once 返回 False → 不跑 spawn #2。
+    """
     monkeypatch.setattr("app.queue.tasks.get_sessionmaker", lambda: db_sm)
     monkeypatch.setattr("app.queue.tasks.aioredis", fake_aioredis)
     fake_git = FakeGitService()
@@ -328,9 +362,12 @@ async def test_run_brainstorm_runtime_error(db_sm, fake_aioredis, monkeypatch):
 
     result = await run_brainstorm(ctx={}, project_id=pid, prompt="test")
 
+    # 无 completed 也无 refused → spawn_ok=False → succeeded_all=False → FAILED
     assert result["succeeded"] is False
     assert result["refused"] is False
-    assert result["reason"] == "runtime_error"
+    assert result["error"] is None
+    # spawn #1 无 completed → ok1=False → 不跑 spawn #2
+    assert fake_rt.spawn_count == 1
 
     async with db_sm() as s:
         ags = (
