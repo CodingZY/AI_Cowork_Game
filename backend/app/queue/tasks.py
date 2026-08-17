@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import redis.asyncio as aioredis
 
@@ -75,6 +76,8 @@ async def run_brainstorm_questions(ctx, project_id: int, idea: str):
             aggregate_type="git", aggregate_id=project_id,
         ))
         claude_cwd = str(wt / "games" / project_key)
+        # 子进程 cwd 必须存在（job1 不写文件但 cwd 要在；job2 读 cwd）。确保 games/{key} 目录在
+        os.makedirs(claude_cwd, exist_ok=True)
         async with sm() as s:
             prow = await ProjectRepositoryRepo(s).get_by_project(project_id)
             if prow is None:
@@ -350,6 +353,8 @@ async def run_gdd_check(ctx, project_id: int):
         # 3. worktree 路径 → claude_cwd=worktree/games/{key}；预建 agent_session
         wt = await git.worktree_path(project_key)
         claude_cwd = str(wt / "games" / project_key)
+        # 子进程 cwd 必须存在（job1 不写文件但 cwd 要在；job2 读 cwd）。确保 games/{key} 目录在
+        os.makedirs(claude_cwd, exist_ok=True)
         async with sm() as s:
             asess = await AgentSessionRepo(s).create(project_id, GDD_CHECK_TYPE, claude_cwd)
             await s.commit()
