@@ -17,6 +17,22 @@ async def enqueue_brainstorm(project_id: int, prompt: str) -> str:
     return job.job_id
 
 
+async def enqueue_brainstorm_questions(project_id: int, idea: str) -> str:
+    """向 Arq 队列 enqueue run_brainstorm_questions(project_id, idea)，返回 job_id。"""
+    s = get_settings()
+    redis = await create_pool(RedisSettings.from_dsn(s.redis_url))
+    job = await redis.enqueue_job("run_brainstorm_questions", project_id, idea, _queue_name=s.arq_queue)
+    return job.job_id
+
+
+async def enqueue_brainstorm_generate(project_id: int) -> str:
+    """向 Arq 队列 enqueue run_brainstorm_generate(project_id)，返回 job_id。"""
+    s = get_settings()
+    redis = await create_pool(RedisSettings.from_dsn(s.redis_url))
+    job = await redis.enqueue_job("run_brainstorm_generate", project_id, _queue_name=s.arq_queue)
+    return job.job_id
+
+
 async def enqueue_finalize(project_id: int) -> str:
     """向 Arq 队列 enqueue run_finalize(project_id)，返回 job_id。
 

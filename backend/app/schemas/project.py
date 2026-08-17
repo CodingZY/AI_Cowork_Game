@@ -20,3 +20,7 @@ class ProjectRead(BaseModel):
 
 class BrainstormRequest(BaseModel):
     idea: str
+
+
+class AnswerBody(BaseModel):
+    answers: list  # [{question_id, answer}]

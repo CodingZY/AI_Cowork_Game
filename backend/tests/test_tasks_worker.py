@@ -8,7 +8,7 @@ from app.models import Base
 from app.models.agent_session import AgentSession
 from app.models.event import Event
 from app.persistence.repo import AgentSessionRepo, ProjectRepo
-from app.queue.tasks import run_brainstorm
+from app.queue.tasks import run_brainstorm, run_brainstorm_questions
 from app.schemas.event import CoworkEvent, _new_event_id
 from app.workflow.engine import WorkflowBlocked
 from app.workflow.states import ProjectStatus
@@ -389,5 +389,5 @@ async def test_run_brainstorm_runtime_error(db_sm, fake_aioredis, monkeypatch):
 def test_worker_settings_has_run_brainstorm():
     from app.queue.worker import WorkerSettings
 
-    assert run_brainstorm in WorkerSettings.functions
+    assert run_brainstorm_questions in WorkerSettings.functions
     assert WorkerSettings.redis_settings is not None

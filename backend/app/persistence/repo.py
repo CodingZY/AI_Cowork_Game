@@ -94,6 +94,12 @@ class ProjectRepo:
             update(Project).where(Project.id == project_id).values(status=status)
         )
 
+    async def set_description(self, project_id: int, description: str) -> None:
+        """写 project.description（供 job2 run_brainstorm_generate 读 idea 拼 prompt）。"""
+        await self.session.execute(
+            update(Project).where(Project.id == project_id).values(description=description)
+        )
+
 
 class AgentSessionRepo:
     """agent_sessions 表 CRUD 封装（spec §6.2）。
