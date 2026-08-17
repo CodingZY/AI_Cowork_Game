@@ -82,6 +82,12 @@ class ProjectRepo:
             )
         ).scalar_one_or_none()
 
+    async def list_all(self) -> list[Project]:
+        """所有 project，按 id 倒序（新建在前）。"""
+        return (
+            await self.session.execute(select(Project).order_by(Project.id.desc()))
+        ).scalars().all()
+
     async def get_by_key(self, key: str) -> Optional[Project]:
         return (
             await self.session.execute(
