@@ -1,28 +1,22 @@
-import { useState } from 'react'
-import { ProgressBar } from './components/ProgressBar'
-import { ProgressStream } from './components/ProgressStream'
-import { DesignWorkbench } from './stages/DesignWorkbench'
-import { createRun } from './api/client'
-import type { Run, ProgressMsg } from './types'
+import { Routes, Route, Navigate } from 'react-router-dom'
+import { AppShell } from '@/components/shared/AppShell'
+import { BrainstormHub } from '@/features/1-brainstorm/BrainstormHub'
+import { DesignSpecPage } from '@/features/2-design/DesignSpecPage'
+import { AssetStudio } from '@/features/3-assets/AssetStudio'
+import { CoderPlayground } from '@/features/4-coder/CoderPlayground'
+import { ReleasePage } from '@/features/5-versions/ReleasePage'
 
 export default function App() {
-  const [run, setRun] = useState<Run | null>(null)
-  const [name, setName] = useState('')
-  const [messages, setMessages] = useState<ProgressMsg[]>([])
-  const appendMessage = (m: ProgressMsg) => setMessages(prev => [...prev, m])
-
   return (
-    <div style={{ fontFamily: 'sans-serif' }}>
-      <ProgressBar current={run?.current_stage || 'S1_design'} />
-      {!run ? (
-        <div style={{ padding: 12 }}>
-          <input placeholder="游戏名" value={name} onChange={e => setName(e.target.value)} />
-          <button onClick={async () => { const r = await createRun(name); setRun(r) }}>开始设计</button>
-        </div>
-      ) : (
-        <DesignWorkbench runId={run.id} status={run.status} onMessage={appendMessage} />
-      )}
-      <ProgressStream messages={messages} />
-    </div>
+    <AppShell>
+      <Routes>
+        <Route path="/brainstorm" element={<BrainstormHub />} />
+        <Route path="/design" element={<DesignSpecPage />} />
+        <Route path="/assets" element={<AssetStudio />} />
+        <Route path="/coder" element={<CoderPlayground />} />
+        <Route path="/release" element={<ReleasePage />} />
+        <Route path="*" element={<Navigate to="/brainstorm" replace />} />
+      </Routes>
+    </AppShell>
   )
 }
