@@ -20,18 +20,18 @@ def test_plugin_json():
 
 def test_brainstorm_skill_constraints():
     s = _read("02-game-brainstorm")
-    assert "brainstorm-concept.md" in s
-    assert "Do not write GDD" in s or "不写 GDD" in s or "**Do not write GDD.md**" in s
-    assert "core_loop" in s  # concept 格式
-    assert "Write" in s
+    assert "(A)" in s  # 带选项格式
+    assert "问题" in s
+    assert "Do NOT write" in s or "不落" in s  # 不写文件
 
 
 def test_gdd_generator_skill_constraints():
     s = _read("03-gdd-generator")
     assert "GDD.md" in s
     assert "gdd-manifest.json" in s
-    assert "17 sections" in s or "Game Overview" in s  # 17节
+    assert "answers" in s.lower() or "答案" in s
     assert "F001" in s  # manifest feature id
+    assert "17 sections" in s or "Game Overview" in s  # 17节
     assert "acceptance" in s.lower()
 
 

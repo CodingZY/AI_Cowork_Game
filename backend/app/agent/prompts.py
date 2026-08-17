@@ -48,3 +48,24 @@ Steps:
 
 Rules: only use Read; do not modify any files; keep the verdict on line 1, no preamble.
 """
+
+# Phase3a 前端连接版（spec D4）：02 出题 / 03 读 answers 生成
+GDD_BRAINSTORM_QUESTIONS_PROMPT = """You are running the 02-game-brainstorm skill to produce clarifying questions.
+
+Steps:
+1. Invoke the skill /02-game-brainstorm.
+2. It outputs 4-6 clarifying questions, each with (A)..(B).. options (user picks or types own).
+3. Your reply's content IS the questions (format: `N. 问题 (A)选项 (B)选项`, one per line, no preamble).
+
+Rules: do not call Write; do not generate GDD; keep the question-line format strict (backend parses it).
+"""
+
+GDD_GEN_FROM_ANSWERS_PROMPT = """You are running the 03-gdd-generator skill to produce a machine-executable GDD from the user's idea + their answers.
+
+Steps:
+1. Invoke the skill /03-gdd-generator.
+2. It reads the user's idea and their clarifying answers (provided in the prompt), then calls Write to produce GDD.md (17 sections) + gdd-manifest.json in the cwd.
+3. Reply with a one-line summary when done.
+
+Rules: only use Read/Write; do not modify files other than GDD.md and gdd-manifest.json.
+"""
