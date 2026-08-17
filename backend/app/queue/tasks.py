@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import redis.asyncio as aioredis
 
 from app.agent.prompts import (
@@ -7,6 +9,7 @@ from app.agent.prompts import (
     GDD_BRAINSTORM_QUESTIONS_PROMPT,
     GDD_BRAINSTORM_SYSTEM_PROMPT,
     GDD_CHECK_SYSTEM_PROMPT,
+    GDD_GEN_FROM_ANSWERS_PROMPT,
     GDD_GEN_SYSTEM_PROMPT,
 )
 from app.agent.questions_parser import parse_questions
@@ -19,6 +22,7 @@ from app.persistence.db import get_sessionmaker
 from app.persistence.repo import AgentSessionRepo, ProjectRepo, ProjectRepositoryRepo, QuestionRepo
 from app.schemas.event import CoworkEvent
 from app.workflow.engine import (
+    WorkflowBlocked,
     assert_can_brainstorm,
     assert_can_finalize,
     assert_can_gdd_check,
@@ -277,6 +281,102 @@ async def run_brainstorm_questions(ctx, project_id: int, idea: str):
             aggregate_type="brainstorm", aggregate_id=project_id,
         ))
         return {"succeeded": True, "questions": questions}
+    finally:
+        await lock.release()
+        await r.close()
+
+
+async def run_brainstorm_generate(ctx, project_id: int):
+    """job2：读 answers → spawn 03 生成 GDD → gdd.review_ready → GDD_REVIEW。
+
+    状态校验 BRAINSTORMING → 读 project.description（idea）+ QuestionRepo.get_latest
+    取 answers → acquire brainstorm lock → spawn 03（prompt 拼 idea+answers JSON，
+    指示调 /03-gdd-generator 落 GDD.md+manifest）→ 三态收尾：refused/runtime_err/
+    未 succeeded → agent_session FAILED + project FAILED；成功 → agent_session
+    COMPLETED + project GDD_REVIEW + event gdd.review_ready。
+
+    idea 来源（执行决策）：job2 是独立 Arq task，拿不到 job1 的 idea 入参。idea 存
+    project.description（createProject/job1 写入），此处读 project.description 拼 prompt。
+    """
+    settings = get_settings()
+    sm = get_sessionmaker()
+
+    # 1. 状态校验（必须 BRAINSTORMING）+ 读 idea（project.description）+ answers
+    async with sm() as s:
+        p = await ProjectRepo(s).get(project_id)
+        if p is None:
+            return {"failed": True, "reason": "project_not_found"}
+        if p.status != ProjectStatus.BRAINSTORMING.value:
+            raise WorkflowBlocked(f"cannot generate from {p.status}")
+        bq = await QuestionRepo(s).get_latest(project_id)
+        await s.commit()
+    project_key = p.project_key
+    idea = p.description or ""
+    answers = bq.answers if bq else []
+
+    # 2. acquire brainstorm lock + broker + git（worktree 路径 → cwd）
+    r = aioredis.from_url(settings.redis_url)
+    lock = r.lock(f"lock:project:{project_id}:brainstorm", timeout=1800)
+    await lock.acquire()
+    try:
+        broker = EventBroker(session_factory=sm, redis=r)
+        git = GitService()
+        wt = await git.worktree_path(project_key)
+        claude_cwd = str(wt / "games" / project_key)
+        plugin_dir_abs = str(REPO_ROOT / settings.game_skills_dir)
+
+        # 3. 预建 agent_session + spawn 03：逐事件 publish，抓 completed
+        async with sm() as s:
+            asess = await AgentSessionRepo(s).create(project_id, GDD_GEN_TYPE, claude_cwd)
+            await s.commit()
+        asid = asess.id
+
+        runtime = ClaudeRuntime()
+        refused = False
+        runtime_err = None
+        succeeded = False
+        prompt = (
+            f"用户创意与澄清答案（JSON）："
+            f"{json.dumps({'idea': idea, 'answers': answers}, ensure_ascii=False)}。"
+            "请调用 /03-gdd-generator 生成 GDD.md(17节) + gdd-manifest.json。"
+        )
+        try:
+            async for evt in runtime.start(
+                prompt, claude_cwd, project_id, agent_type=GDD_GEN_TYPE,
+                system_prompt=GDD_GEN_FROM_ANSWERS_PROMPT, plugin_dir=plugin_dir_abs,
+            ):
+                evt.aggregate_id = asid
+                if evt.type == "agent.session.completed":
+                    succeeded = True
+                elif evt.type == "agent.refused":
+                    refused = True
+                await broker.publish(evt)
+        except Exception as e:
+            runtime_err = f"{type(e).__name__}: {e}"
+            await broker.publish(CoworkEvent(
+                project_id=project_id, type="agent.session.failed",
+                data={"reason": "runtime_error", "error": runtime_err},
+                aggregate_id=asid,
+            ))
+
+        # 4. 三态收尾：refused/runtime_err/未 succeeded → FAILED；成功 → COMPLETED + GDD_REVIEW
+        if refused or runtime_err or not succeeded:
+            async with sm() as s:
+                await AgentSessionRepo(s).finish(asid, "FAILED")
+                await ProjectRepo(s).set_status(project_id, ProjectStatus.FAILED)
+                await s.commit()
+            return {"succeeded": False, "refused": refused, "error": runtime_err}
+
+        async with sm() as s:
+            await AgentSessionRepo(s).finish(asid, "COMPLETED")
+            await ProjectRepo(s).set_status(project_id, ProjectStatus.GDD_REVIEW)
+            await s.commit()
+        await broker.publish(CoworkEvent(
+            project_id=project_id, type="gdd.review_ready",
+            data={"project_id": project_id},
+            aggregate_type="gdd", aggregate_id=project_id,
+        ))
+        return {"succeeded": True}
     finally:
         await lock.release()
         await r.close()
