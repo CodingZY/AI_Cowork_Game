@@ -27,3 +27,11 @@ async def enqueue_finalize(project_id: int) -> str:
     redis = await create_pool(RedisSettings.from_dsn(s.redis_url))
     job = await redis.enqueue_job("run_finalize", project_id, _queue_name=s.arq_queue)
     return job.job_id
+
+
+async def enqueue_gdd_check(project_id: int) -> str:
+    """向 Arq 队列 enqueue run_gdd_check(project_id)，返回 job_id。"""
+    s = get_settings()
+    redis = await create_pool(RedisSettings.from_dsn(s.redis_url))
+    job = await redis.enqueue_job("run_gdd_check", project_id, _queue_name=s.arq_queue)
+    return job.job_id
