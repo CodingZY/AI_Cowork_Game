@@ -43,7 +43,7 @@ async def test_run_finalize_success(db_sm, fake_aioredis, monkeypatch):
     fake_git = FakeGitFinalize()
     monkeypatch.setattr("app.queue.tasks.GitService", lambda: fake_git)
 
-    pid = await _create_project(db_sm, key="fin", status="BRAINSTORMING")
+    pid = await _create_project(db_sm, key="fin", status="GDD_APPROVED")
     # 预置 project_repositories.current_branch
     async with db_sm() as s:
         await ProjectRepositoryRepo(s).create(
@@ -93,7 +93,7 @@ async def test_run_finalize_git_failure(db_sm, fake_aioredis, monkeypatch):
             raise RuntimeError("commit boom")
 
     monkeypatch.setattr("app.queue.tasks.GitService", lambda: FailingGit())
-    pid = await _create_project(db_sm, key="failfin", status="BRAINSTORMING")
+    pid = await _create_project(db_sm, key="failfin", status="GDD_APPROVED")
     async with db_sm() as s:
         await ProjectRepositoryRepo(s).create(
             project_id=pid, owner="o", repository="r", sub_path="games/failfin/")
