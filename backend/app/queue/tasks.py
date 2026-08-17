@@ -5,6 +5,7 @@ import redis.asyncio as aioredis
 from app.agent.prompts import (
     BRAINSTORM_SYSTEM_PROMPT,
     GDD_BRAINSTORM_SYSTEM_PROMPT,
+    GDD_CHECK_SYSTEM_PROMPT,
     GDD_GEN_SYSTEM_PROMPT,
 )
 from app.agent.runtime import ClaudeRuntime
@@ -15,12 +16,17 @@ from app.git.template import ensure_template_pushed
 from app.persistence.db import get_sessionmaker
 from app.persistence.repo import AgentSessionRepo, ProjectRepo, ProjectRepositoryRepo
 from app.schemas.event import CoworkEvent
-from app.workflow.engine import assert_can_brainstorm, assert_can_finalize
+from app.workflow.engine import (
+    assert_can_brainstorm,
+    assert_can_finalize,
+    assert_can_gdd_check,
+)
 from app.workflow.states import ProjectStatus
 
 # agent_type 标签（agent_sessions.agent_type 列 + last_claude_session 查询用）
 AGENT_TYPE = "BRAINSTORM"
 GDD_GEN_TYPE = "GDD_GEN"
+GDD_CHECK_TYPE = "GDD_CHECK"
 
 
 async def run_brainstorm(ctx, project_id: int, prompt: str):
@@ -249,6 +255,105 @@ async def run_finalize(ctx, project_id: int):
             await ProjectRepo(s).set_status(project_id, ProjectStatus.FAILED)
             await s.commit()
         return {"succeeded": False, "error": err}
+    finally:
+        await lock.release()
+        await r.close()
+
+
+async def run_gdd_check(ctx, project_id: int):
+    """Arq task：跑 04-gdd-check 硬门禁（spec §5.4/D9）。
+
+    spawn 04 → parser 抓 agent.session.completed.result：
+      首行含 PASS 且不含 FAIL → GDD_APPROVED + event gdd.check.passed
+      首行含 FAIL（或无 PASS/空 result）→ 回 GDD_REVIEW + event gdd.check.failed（带 reasons=首行）
+    异常兜底：spawn 失败/子进程崩溃 → gdd.check.failed + agent_session FAILED + 回 GDD_REVIEW。
+    """
+    settings = get_settings()
+    sm = get_sessionmaker()
+
+    # 1. 状态校验（仅 GDD_REVIEW）→ 置 GDD_CHECKING
+    async with sm() as s:
+        p = await ProjectRepo(s).get(project_id)
+        if p is None:
+            return {"failed": True, "reason": "project_not_found"}
+        assert_can_gdd_check(p.status)
+        await ProjectRepo(s).set_status(project_id, ProjectStatus.GDD_CHECKING)
+        await s.commit()
+    project_key = p.project_key
+
+    # 2. acquire gdd_check lock + broker + git + plugin_dir_abs
+    r = aioredis.from_url(settings.redis_url)
+    lock = r.lock(f"lock:project:{project_id}:gdd_check", timeout=1800)
+    await lock.acquire()
+    broker = EventBroker(session_factory=sm, redis=r)
+    git = GitService()
+    plugin_dir_abs = str(REPO_ROOT / settings.game_skills_dir)
+    try:
+        # 3. worktree 路径 → claude_cwd=worktree/games/{key}；预建 agent_session
+        wt = await git.worktree_path(project_key)
+        claude_cwd = str(wt / "games" / project_key)
+        async with sm() as s:
+            asess = await AgentSessionRepo(s).create(project_id, GDD_CHECK_TYPE, claude_cwd)
+            await s.commit()
+        asid = asess.id
+
+        # 4. spawn 04：逐事件 publish，抓 agent.session.completed.result 存 verdict_result
+        runtime = ClaudeRuntime()
+        verdict_result = None
+        try:
+            async for evt in runtime.start(
+                "请调用 /04-gdd-check 检查 GDD.md + gdd-manifest.json 完整性，输出 PASS 或 FAIL: <缺失项>。",
+                claude_cwd, project_id, agent_type=GDD_CHECK_TYPE,
+                system_prompt=GDD_CHECK_SYSTEM_PROMPT, plugin_dir=plugin_dir_abs,
+            ):
+                evt.aggregate_id = asid
+                if evt.type == "agent.session.completed":
+                    verdict_result = evt.data.get("result", "")
+                await broker.publish(evt)
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            await broker.publish(CoworkEvent(
+                project_id=project_id, type="gdd.check.failed",
+                data={"project_id": project_id, "reasons": f"runtime_error: {err}", "result": ""},
+                aggregate_type="gdd", aggregate_id=project_id,
+            ))
+            async with sm() as s:
+                await AgentSessionRepo(s).finish(asid, "FAILED")
+                await ProjectRepo(s).set_status(project_id, ProjectStatus.GDD_REVIEW)
+                await s.commit()
+            return {"passed": False, "error": err}
+
+        # 5. parser：取 result 首行判定 PASS/FAIL（容错：空 verdict → False，回 GDD_REVIEW）
+        verdict = (verdict_result or "").strip()
+        first_line = verdict.splitlines()[0] if verdict else ""
+        upper = first_line.upper()
+        passed = "PASS" in upper and "FAIL" not in upper
+        if "FAIL" in upper:
+            passed = False
+
+        if passed:
+            async with sm() as s:
+                await AgentSessionRepo(s).finish(asid, "COMPLETED")
+                await ProjectRepo(s).set_status(project_id, ProjectStatus.GDD_APPROVED)
+                await s.commit()
+            await broker.publish(CoworkEvent(
+                project_id=project_id, type="gdd.check.passed",
+                data={"project_id": project_id, "result": verdict},
+                aggregate_type="gdd", aggregate_id=project_id,
+            ))
+            return {"passed": True, "result": verdict}
+        else:
+            async with sm() as s:
+                # check 本身完成（判定 FAIL），session 标 COMPLETED；project 回 GDD_REVIEW（可再改再 approve）
+                await AgentSessionRepo(s).finish(asid, "COMPLETED")
+                await ProjectRepo(s).set_status(project_id, ProjectStatus.GDD_REVIEW)
+                await s.commit()
+            await broker.publish(CoworkEvent(
+                project_id=project_id, type="gdd.check.failed",
+                data={"project_id": project_id, "reasons": first_line, "result": verdict},
+                aggregate_type="gdd", aggregate_id=project_id,
+            ))
+            return {"passed": False, "result": verdict}
     finally:
         await lock.release()
         await r.close()
