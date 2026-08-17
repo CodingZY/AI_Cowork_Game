@@ -1,2 +1,4 @@
 node_modules/
 dist/
+# Phase3a：02 brainstorm 的中间产物，不进 git（spec §11：finalize 不 commit concept）
+.brainstorm-concept.md
