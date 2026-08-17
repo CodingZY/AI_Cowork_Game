@@ -6,6 +6,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_session import AgentSession
+from app.models.brainstorm_questions import BrainstormQuestion
 from app.models.event import Event
 from app.models.project import Project
 from app.models.project_repository import ProjectRepository
@@ -200,3 +201,34 @@ class ProjectRepositoryRepo:
             .where(ProjectRepository.project_id == project_id)
             .values(last_commit_sha=sha)
         )
+
+
+class QuestionRepo:
+    """brainstorm_questions 表 CRUD（spec §5.5）。"""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, project_id: int, round: int, questions: list) -> BrainstormQuestion:
+        row = BrainstormQuestion(project_id=project_id, round=round, questions=questions)
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def get_latest(self, project_id: int) -> Optional[BrainstormQuestion]:
+        q = (
+            select(BrainstormQuestion)
+            .where(BrainstormQuestion.project_id == project_id)
+            .order_by(BrainstormQuestion.round.desc())
+            .limit(1)
+        )
+        return (await self.session.execute(q)).scalar_one_or_none()
+
+    async def set_answers(self, project_id: int, round: int, answers: list) -> None:
+        row = await self.get_latest(project_id)
+        if row is not None:
+            await self.session.execute(
+                update(BrainstormQuestion)
+                .where(BrainstormQuestion.id == row.id)
+                .values(answers=answers)
+            )
