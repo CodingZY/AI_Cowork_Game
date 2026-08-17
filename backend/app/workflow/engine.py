@@ -36,10 +36,16 @@ def assert_can_finalize(status: ProjectStatus | str) -> None:
 
 
 def assert_can_gdd_check(status: ProjectStatus | str) -> None:
-    """仅 GDD_REVIEW 可跑 04-gdd-check。"""
+    """GDD_REVIEW 或 GDD_CHECKING 可跑 04-gdd-check。
+
+    GDD_CHECKING 是 approve 端点置的「check 即将跑」状态（spec §5.5：
+    approve→置 GDD_CHECKING→enqueue run_gdd_check）——run_gdd_check 从
+    GDD_CHECKING 继续合法。approve 端点自身已校验从 GDD_REVIEW 来，故
+    允许 GDD_CHECKING 不会绕过门（重复 approve 被 409 挡）。
+    """
     try:
         current = ProjectStatus(status)
     except ValueError:
         raise WorkflowBlocked(f"cannot gdd_check from {status!r}")
-    if current is not ProjectStatus.GDD_REVIEW:
+    if current not in (ProjectStatus.GDD_REVIEW, ProjectStatus.GDD_CHECKING):
         raise WorkflowBlocked(f"cannot gdd_check from {current}")

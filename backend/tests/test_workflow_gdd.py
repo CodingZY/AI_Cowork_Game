@@ -24,9 +24,9 @@ def test_finalize_requires_gdd_approved():
 
 
 def test_gdd_check_requires_gdd_review():
+    """GDD_REVIEW 或 GDD_CHECKING 可跑 04（approve 端点置 GDD_CHECKING 后 enqueue）。"""
     assert_can_gdd_check(ProjectStatus.GDD_REVIEW)  # 不抛
-    with pytest.raises(WorkflowBlocked):
-        assert_can_gdd_check(ProjectStatus.GDD_CHECKING)
+    assert_can_gdd_check(ProjectStatus.GDD_CHECKING)  # approve 已置，check 继续
     with pytest.raises(WorkflowBlocked):
         assert_can_gdd_check(ProjectStatus.GDD_APPROVED)
 

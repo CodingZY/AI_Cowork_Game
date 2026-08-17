@@ -20,3 +20,7 @@ class WorkerSettings:
     functions = [run_brainstorm, run_finalize, run_gdd_check]
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
     queue_name = get_settings().arq_queue
+    # Phase3a e2e 暴露：run_brainstorm 两次 spawn（02+03）真打 KSPMAS 累积
+    # 超过 Arq 默认 job_timeout=300s，02 轮 ~290s + 03 轮即被杀。给 900s（15min）
+    # 覆盖两轮 spawn + 04 check。run_finalize/run_gdd_check 单轮远短于此。
+    job_timeout = 900
