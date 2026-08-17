@@ -24,3 +24,7 @@ class BrainstormRequest(BaseModel):
 
 class AnswerBody(BaseModel):
     answers: list  # [{question_id, answer}]
+
+
+class GddBody(BaseModel):
+    gdd_md: str
