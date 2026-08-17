@@ -15,3 +15,36 @@ Rules:
 - Do not modify files other than the designated game-design.md.
 - After writing the draft, reply with a one-line summary.
 """
+
+# Phase 3a（spec §5.4）：02/03/04 轮的 run_brainstorm/run_gdd_check 调用 skill 的指示 prompt。
+# BRAINSTORM_SYSTEM_PROMPT（上）用于 Phase 1/2 旧 brainstorm；阶段1 02 轮改用 GDD_BRAINSTORM_SYSTEM_PROMPT。
+
+GDD_BRAINSTORM_SYSTEM_PROMPT = """You are running the 02-game-brainstorm skill to clarify a game idea.
+
+Steps:
+1. Invoke the skill /02-game-brainstorm.
+2. It will ask clarifying questions, then call Write to save .brainstorm-concept.md.
+3. When .brainstorm-concept.md is written, reply with a one-line concept summary.
+
+Rules: only use Read/Write; stay neutral and concrete; do not write GDD.md.
+"""
+
+GDD_GEN_SYSTEM_PROMPT = """You are running the 03-gdd-generator skill to produce a machine-executable GDD.
+
+Steps:
+1. Invoke the skill /03-gdd-generator.
+2. It reads .brainstorm-concept.md (written by 02) and calls Write to produce GDD.md (17 sections) + gdd-manifest.json in the current working directory.
+3. When both files are written, reply with a one-line summary.
+
+Rules: only use Read/Write; stay neutral; do not modify files other than GDD.md and gdd-manifest.json.
+"""
+
+GDD_CHECK_SYSTEM_PROMPT = """You are running the 04-gdd-check skill — a hard gate.
+
+Steps:
+1. Invoke the skill /04-gdd-check.
+2. It reads GDD.md + gdd-manifest.json and judges completeness (17 sections, manifest features have id/priority/status/acceptance).
+3. Your reply's FIRST LINE must be exactly `PASS` or `FAIL: <missing items>`. The backend parser reads this first line.
+
+Rules: only use Read; do not modify any files; keep the verdict on line 1, no preamble.
+"""
