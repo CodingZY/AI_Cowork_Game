@@ -5,9 +5,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.persistence.db import get_sessionmaker
 from app.persistence.repo import ProjectRepo
-from app.queue.jobs import enqueue_brainstorm, enqueue_finalize
+from app.queue.jobs import enqueue_brainstorm, enqueue_finalize, enqueue_gdd_check
 from app.schemas.project import ProjectCreate, ProjectRead, BrainstormRequest
 from app.services import project_service
+from app.workflow.states import ProjectStatus
 
 router = APIRouter(prefix="/api")
 
@@ -58,4 +59,17 @@ async def start_brainstorm(pid: int, body: BrainstormRequest):
 @router.post("/projects/{pid}/brainstorm/finalize", status_code=202)
 async def finalize_brainstorm(pid: int):
     job_id = await enqueue_finalize(pid)
+    return {"task_id": job_id}
+
+
+@router.post("/projects/{pid}/gdd/approve", status_code=202)
+async def approve_gdd(pid: int, session: AsyncSession = Depends(get_session)):
+    p = await ProjectRepo(session).get(pid)
+    if p is None:
+        raise HTTPException(404, "project not found")
+    if p.status != ProjectStatus.GDD_REVIEW.value:
+        raise HTTPException(409, f"cannot approve from {p.status}")
+    await ProjectRepo(session).set_status(pid, ProjectStatus.GDD_CHECKING)
+    await session.commit()
+    job_id = await enqueue_gdd_check(pid)
     return {"task_id": job_id}
