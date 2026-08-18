@@ -36,7 +36,7 @@ import {
   rogueBrainstormChat,
 } from '@/services/mockData'
 import * as api from '@/api/backend'
-import type { Question, Answer, GddContent, CoworkEvent } from '@/api/backend'
+import type { Question, Answer, GddContent, CoworkEvent, DesignState } from '@/api/backend'
 
 // ── 头脑风暴脚本：依据已发出的 user 消息数决定 Agent 下一句 ──
 function nextAgentReply(userTurnCount: number): {
@@ -176,6 +176,16 @@ interface GameState {
   finalizeRealGdd: () => Promise<void>
   handleSSEEvent: (e: CoworkEvent) => void
   setRealAnswer: (qid: string, answer: string) => void
+
+  // 阶段1 Temporal 真后端（Query 轮询逐题驱动）
+  designState: DesignState | null
+  pollTimer: number | null
+  startDesign: (name: string, idea: string) => Promise<void>
+  ensurePoll: () => void
+  pollState: () => Promise<void>
+  stopPoll: () => void
+  submitAnswer: (qid: string, answer: string) => Promise<void>
+  skipQuestion: (qid: string) => Promise<void>
 }
 
 // ── 纯函数 helper：操作当前游戏的素材数组 ─────────────────
@@ -218,6 +228,19 @@ function freshCodeWorkspace() {
     } as PreviewState,
     codeCheck: 'HEADLESS_PASSED' as CodeCheckStatus,
   }
+}
+
+// ── Temporal Query 轮询：启动 2s 间隔轮询（幂等，已运行则跳过）──
+function beginPoll(
+  get: () => GameState,
+  set: (fn: (s: GameState) => Partial<GameState>) => void,
+) {
+  if (get().pollTimer != null) return
+  void get().pollState()
+  const t = window.setInterval(() => {
+    void get().pollState()
+  }, 2000)
+  set(() => ({ pollTimer: t }))
 }
 
 export const useGameStore = create<GameState>()((set, get) => ({
@@ -530,10 +553,13 @@ export const useGameStore = create<GameState>()((set, get) => ({
   realAnswers: [],
   gddContent: null,
   gddMd: '',
+  designState: null,
+  pollTimer: null,
 
   createRealProject: async (name, idea) => {
     const p = await api.createProject(name, idea)
-    set({ realProject: p, realQuestions: [], realAnswers: [], gddContent: null, gddMd: '' })
+    set({ realProject: p, realQuestions: [], realAnswers: [], gddContent: null, gddMd: '', designState: null })
+    beginPoll(get, set)
   },
 
   sendIdea: async (idea) => {
@@ -570,7 +596,9 @@ export const useGameStore = create<GameState>()((set, get) => ({
   submitRealAnswers: async () => {
     const p = get().realProject
     if (!p) return
-    await api.submitAnswer(p.id, get().realAnswers)
+    for (const a of get().realAnswers) {
+      await api.submitAnswer(p.id, a.question_id, a.answer)
+    }
   },
 
   submitRealGdd: async () => {
@@ -596,6 +624,55 @@ export const useGameStore = create<GameState>()((set, get) => ({
       const rest = s.realAnswers.filter((a) => a.question_id !== qid)
       return { realAnswers: [...rest, { question_id: qid, answer }] }
     })
+  },
+
+  // ── 阶段1 Temporal 真后端（Query 轮询逐题驱动）────────────
+  startDesign: async (name, idea) => {
+    // 幂等：已有 realProject（如经 NewGameDialog 创建）则只恢复轮询，不重复建项
+    if (!get().realProject) {
+      const p = await api.createProject(name, idea)
+      set({ realProject: p, realQuestions: [], realAnswers: [], gddContent: null, gddMd: '', designState: null })
+    }
+    beginPoll(get, set)
+  },
+
+  ensurePoll: () => {
+    const phase = get().designState?.phase
+    if (get().realProject && get().pollTimer == null && phase !== 'COMPLETED' && phase !== 'FAILED') {
+      beginPoll(get, set)
+    }
+  },
+
+  pollState: async () => {
+    const p = get().realProject
+    if (!p) return
+    try {
+      const st = await api.getState(p.id)
+      set({ designState: st })
+      if (st.phase === 'COMPLETED' || st.phase === 'FAILED') get().stopPoll()
+    } catch {
+      // 瞬时网络错误：保留旧 designState，继续轮询
+    }
+  },
+
+  stopPoll: () => {
+    const t = get().pollTimer
+    if (t != null) window.clearInterval(t)
+    set({ pollTimer: null })
+  },
+
+  submitAnswer: async (qid, answer) => {
+    const p = get().realProject
+    if (!p) return
+    await api.submitAnswer(p.id, qid, answer)
+    void get().pollState()
+  },
+
+  skipQuestion: async (qid) => {
+    const p = get().realProject
+    if (!p) return
+    await api.skipQuestion(p.id, qid)
+    void get().pollState()
   },
 }))
 

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { SendHorizonal, Sparkles, Bot } from 'lucide-react'
 import { useGameStore, useCurrentChat } from '@/store/useGameStore'
 import { useAgentWebSocket } from '@/hooks/useAgentWebSocket'
-import { useSSE } from '@/hooks/useSSE'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
@@ -10,8 +9,8 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn, formatTime } from '@/lib/utils'
 import { OptionChips } from './OptionChips'
 import { LandedCard } from './LandedCard'
-import { QuestionForm } from './QuestionForm'
-import { GddReviewPanel } from './GddReviewPanel'
+import { QuestionCard } from './QuestionCard'
+import { ProgressStepper } from './ProgressStepper'
 
 export function SuperpowerChat() {
   // ── mock 链路 hooks（阶段 2-5 兼容，无条件调用）──
@@ -24,21 +23,30 @@ export function SuperpowerChat() {
   const [text, setText] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // ── 阶段1真后端 hooks（无条件调用；project 为 null 时 useSSE 不连）──
+  // ── 阶段1真后端 hooks（Temporal Query 轮询逐题驱动）──
   const project = useGameStore((s) => s.realProject)
-  const sendIdea = useGameStore((s) => s.sendIdea)
+  const designState = useGameStore((s) => s.designState)
+  const startDesign = useGameStore((s) => s.startDesign)
+  const submit = useGameStore((s) => s.submitAnswer)
+  const skip = useGameStore((s) => s.skipQuestion)
   const finalize = useGameStore((s) => s.finalizeRealGdd)
-  const handleSSEEvent = useGameStore((s) => s.handleSSEEvent)
+  const ensurePoll = useGameStore((s) => s.ensurePoll)
+  const stopPoll = useGameStore((s) => s.stopPoll)
   const [idea, setIdea] = useState('')
-  useSSE(project?.id ?? null, handleSSEEvent)
+
+  // 挂载恢复轮询（若有 realProject 且未完成），卸载停止
+  useEffect(() => {
+    ensurePoll()
+    return () => stopPoll()
+  }, [ensurePoll, stopPoll])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [chat])
 
-  // ── 阶段1真后端状态机：有 realProject 走真后端 ──
+  // ── 阶段1真后端：有 realProject 走 Temporal 逐题驱动（按 designState.phase）──
   if (project) {
-    const st = project.status
+    const phase = designState?.phase
     return (
       <div className="flex h-full min-h-0 flex-col rounded-xl border border-line/70 bg-surface">
         <div className="flex items-center gap-2 border-b border-line/70 px-4 py-3">
@@ -47,14 +55,14 @@ export function SuperpowerChat() {
           </span>
           <div className="flex flex-col">
             <span className="text-sm font-semibold text-ink">{project.name}</span>
-            <span className="text-xs text-ink-3">阶段1 真后端 · {st}</span>
+            <span className="text-xs text-ink-3">阶段1 Temporal · {phase ?? '连接中'}</span>
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
-          {st === 'CREATED' && (
+          {(!designState || phase === 'CREATED') && (
             <div className="space-y-3 p-4">
               <div className="text-sm text-ink-2">
-                发送你的游戏创意，Agent 会产出一批带选项的澄清问题。
+                发送你的游戏创意，Agent 会逐题引导你厘清类型、玩法与美术风格。
               </div>
               <Input
                 value={idea}
@@ -62,35 +70,45 @@ export function SuperpowerChat() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
-                    if (idea.trim()) sendIdea(idea)
+                    if (idea.trim()) startDesign(project.name, idea)
                   }
                 }}
                 placeholder="例如：一款深海主题的农场经营游戏"
-                disabled={streaming}
               />
-              <Button onClick={() => sendIdea(idea)} disabled={!idea.trim()}>
+              <Button onClick={() => startDesign(project.name, idea)} disabled={!idea.trim()}>
                 <SendHorizonal className="size-4" /> 发送创意
               </Button>
             </div>
           )}
-          {st === 'BRAINSTORMING' && <QuestionForm />}
-          {st === 'GDD_REVIEW' && <GddReviewPanel />}
-          {st === 'GDD_CHECKING' && (
+          {phase === 'ANALYZING' && (
             <div className="flex items-center gap-2 p-4 text-sm text-ink-3">
-              <Spinner className="size-3.5" /> GDD 检查中…
+              <Spinner className="size-3.5" /> 分析创意中…
             </div>
           )}
-          {st === 'GDD_APPROVED' && (
+          {phase === 'WAITING_USER' && designState && (
+            <>
+              <ProgressStepper answered={designState.progress.answered} total={designState.progress.total} />
+              <QuestionCard state={designState} onSubmit={submit} onSkip={skip} />
+            </>
+          )}
+          {phase === 'GENERATING_GDD' && (
+            <div className="flex items-center gap-2 p-4 text-sm text-ink-3">
+              <Spinner className="size-3.5" /> 生成 GDD 中…
+            </div>
+          )}
+          {phase === 'CHECKING_GDD' && (
+            <div className="flex items-center gap-2 p-4 text-sm text-ink-3">
+              <Spinner className="size-3.5" /> 检查 GDD 中…
+            </div>
+          )}
+          {phase === 'COMPLETED' && (
             <div className="space-y-3 p-4">
-              <div className="text-sm text-ink-2">GDD 已通过检查，可以定稿落 git。</div>
+              <div className="text-sm text-ink-2">GDD 已生成并通过检查，可以定稿落 git。</div>
               <Button onClick={() => finalize()}>定稿落 git</Button>
             </div>
           )}
-          {st === 'BRAINSTORMED' && (
-            <div className="p-4 text-sm text-ink-2">已完成，GDD 已落 git。</div>
-          )}
-          {st === 'FAILED' && (
-            <div className="p-4 text-sm text-danger">失败（kimi-k3 refusal 或错误），可重试。</div>
+          {phase === 'FAILED' && (
+            <div className="p-4 text-sm text-danger">设计流程失败，可重试或检查后端日志。</div>
           )}
         </div>
       </div>
@@ -102,7 +120,7 @@ export function SuperpowerChat() {
   const showOptions =
     lastMsg?.role === 'agent' && !lastMsg.pending && !!lastMsg.options?.length && !lastMsg.landed
 
-  const submit = () => {
+  const submitMock = () => {
     if (!text.trim() || streaming) return
     send(text)
     setText('')
@@ -151,13 +169,13 @@ export function SuperpowerChat() {
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
-                submit()
+                submitMock()
               }
             }}
             placeholder="输入你的创意，或点击上方选项…"
             disabled={streaming}
           />
-          <Button onClick={submit} disabled={streaming || !text.trim()} size="icon">
+          <Button onClick={submitMock} disabled={streaming || !text.trim()} size="icon">
             <SendHorizonal className="size-4" />
           </Button>
         </div>
