@@ -24,8 +24,21 @@ export async function getProject(id: number): Promise<ProjectRead> {
 export async function enqueueBrainstorm(id: number, idea: string): Promise<{ task_id: string }> {
   return j(await fetch(`${BASE}/projects/${id}/brainstorm`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idea }) }))
 }
-export async function submitAnswer(id: number, answers: Answer[]): Promise<{ task_id: string }> {
-  return j(await fetch(`${BASE}/projects/${id}/brainstorm/answer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers }) }))
+export interface DesignState {
+  phase: string
+  progress: { answered: number; total: number }
+  currentQuestion: { id: string; question: string; options: { id: string; label: string; impact?: string }[]; priority?: string } | null
+  decisions: { id: string; answer: string }[]
+}
+
+export async function getState(id: number): Promise<DesignState> {
+  return j(await fetch(`${BASE}/projects/${id}/state`))
+}
+export async function submitAnswer(id: number, questionId: string, answer: string): Promise<void> {
+  await j(await fetch(`${BASE}/projects/${id}/answer`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question_id: questionId, answer }) }))
+}
+export async function skipQuestion(id: number, questionId: string): Promise<void> {
+  await j(await fetch(`${BASE}/projects/${id}/skip`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question_id: questionId }) }))
 }
 export async function getGdd(id: number): Promise<GddContent> {
   return j(await fetch(`${BASE}/projects/${id}/gdd`))
