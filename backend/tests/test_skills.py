@@ -42,3 +42,9 @@ def test_gdd_check_skill_constraints():
     assert "FAIL" in s
     assert "first line" in s or "line 1" in s  # 格式约束
     assert "17" in s  # 17节齐全
+
+
+def test_game_requirements_skill_constraints():
+    s = _read("game-requirements")
+    assert "Snapshot" in s or "Requirements" in s
+    assert "不调" in s or "not call" in s.lower() or "纯" in s
