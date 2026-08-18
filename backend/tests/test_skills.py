@@ -27,21 +27,16 @@ def test_brainstorm_skill_constraints():
 
 
 def test_gdd_generator_skill_constraints():
-    s = _read("03-gdd-generator")
+    s = _read("gdd-generator")  # Temporal 新名（不带 03 前缀）
+    assert "Snapshot" in s or "Requirements" in s
     assert "GDD.md" in s
-    assert "gdd-manifest.json" in s
-    assert "answers" in s.lower() or "答案" in s
-    assert "F001" in s  # manifest feature id
-    assert "17 sections" in s or "Game Overview" in s  # 17节
-    assert "acceptance" in s.lower()
+    assert "Do NOT re-interpret" in s or "不重新" in s
 
 
 def test_gdd_check_skill_constraints():
-    s = _read("04-gdd-check")
-    assert "PASS" in s
-    assert "FAIL" in s
-    assert "first line" in s or "line 1" in s  # 格式约束
-    assert "17" in s  # 17节齐全
+    s = _read("gdd-check")  # Temporal 新名（不带 04 前缀）
+    assert "PASS" in s and "WARNING" in s and "BLOCKING" in s
+    assert "JSON" in s or "json" in s
 
 
 def test_game_requirements_skill_constraints():
