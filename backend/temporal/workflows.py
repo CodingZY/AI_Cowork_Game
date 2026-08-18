@@ -102,13 +102,23 @@ class GameDesignWorkflow:
             )
 
     def _should_ask(self, q: dict) -> bool:
-        """depends_on 检查：所有依赖条件满足才问。"""
-        for dep in q.get("depends_on", []):
-            ans = self.answers.get(dep["question_id"])
-            if ans is None:
-                return False
-            if dep.get("operator", "equals") == "equals" and ans != dep["value"]:
-                return False
+        """depends_on 检查：所有依赖条件满足才问。
+
+        容错：depends_on 元素可能是 dict ``{"question_id","operator","value"}``
+        或 str ``"Q1"``（kimi-k3 输出格式不固定）。str 形式只判该题已答。
+        """
+        for dep in q.get("depends_on", []) or []:
+            if isinstance(dep, str):
+                # str 形式：仅判该题已答
+                if self.answers.get(dep) is None and dep not in self.skipped:
+                    return False
+            elif isinstance(dep, dict):
+                qid = dep.get("question_id", dep.get("questionId", ""))
+                ans = self.answers.get(qid)
+                if ans is None and qid not in self.skipped:
+                    return False
+                if dep.get("operator", "equals") == "equals" and ans != dep.get("value", ""):
+                    return False
         return True
 
     @workflow.signal

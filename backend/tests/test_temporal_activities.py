@@ -32,7 +32,9 @@ QUESTION_PLAN_JSON = json.dumps({"questions": [
 async def test_analyze_idea_parses_json(monkeypatch):
     """analyze_idea spawn 02，解析 QuestionPlan JSON。"""
     monkeypatch.setattr(activities, "ClaudeRuntime", lambda: FakeRuntime(QUESTION_PLAN_JSON))
-    monkeypatch.setattr(activities, "_worktree_cwd", lambda pid: "/fake/cwd")
+    async def fake_wt(pid): return ("/fake/cwd", "fake-key")
+    monkeypatch.setattr(activities, "_ensure_worktree", fake_wt)
+    monkeypatch.setattr(activities, "_project_id_from_workflow", lambda: 0)
     qp = await activities.analyze_idea("种田游戏")
     assert isinstance(qp, list)
     assert qp[0]["id"] == "camera"
@@ -52,7 +54,9 @@ async def test_check_gdd_parses_three_state(monkeypatch):
     """check_gdd spawn 04，解析三态 JSON。"""
     monkeypatch.setattr(activities, "ClaudeRuntime", lambda: FakeRuntime(
         json.dumps({"status": "PASS", "blocking": [], "warnings": ["economy provisional"]})))
-    monkeypatch.setattr(activities, "_worktree_cwd", lambda pid: "/fake/cwd")
+    async def fake_wt(pid): return ("/fake/cwd", "fake-key")
+    monkeypatch.setattr(activities, "_ensure_worktree", fake_wt)
+    monkeypatch.setattr(activities, "_project_id_from_workflow", lambda: 0)
     result = await activities.check_gdd("# GDD\n")
     assert result["status"] == "PASS"
     assert "economy provisional" in result["warnings"][0]
