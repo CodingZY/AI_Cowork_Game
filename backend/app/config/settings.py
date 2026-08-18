@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     github_pat: str = ""
     git_branch_prefix: str = "agent"
     game_skills_dir: str = "backend/game-skills"
+    temporal_host: str = "localhost"
+    temporal_port: int = 7233
+    temporal_namespace: str = "default"
+    temporal_task_queue: str = "game-design"
 
     @classmethod
     def settings_customise_sources(
