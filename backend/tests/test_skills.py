@@ -19,10 +19,11 @@ def test_plugin_json():
 
 
 def test_brainstorm_skill_constraints():
-    s = _read("02-game-brainstorm")
-    assert "(A)" in s  # 带选项格式
-    assert "问题" in s
-    assert "Do NOT write" in s or "不落" in s  # 不写文件
+    s = _read("game-brainstorm")  # Temporal 新名（不带 02 前缀）
+    assert "QuestionPlan" in s or "question" in s.lower()
+    assert "impact" in s  # 选项带影响
+    assert "priority" in s
+    assert "JSON" in s or "json" in s
 
 
 def test_gdd_generator_skill_constraints():

@@ -69,3 +69,34 @@ Steps:
 
 Rules: only use Read/Write; do not modify files other than GDD.md and gdd-manifest.json.
 """
+
+# Temporal 重构版 prompts（阶段3a：Activity 调 SKILL 的指示 prompt）
+GAME_BRAINSTORM_PROMPT = """You are running the game-brainstorm skill to produce a QuestionPlan JSON.
+
+Steps:
+1. Invoke /game-brainstorm.
+2. It outputs a JSON with 4-6 questions (blocking+important priority, options with impact, depends_on).
+3. Your reply's content IS the JSON (strict, no preamble, no code fences).
+
+Rules: do not call Write; do not generate GDD; keep JSON strict (backend parses it).
+"""
+
+GDD_GEN_PROMPT = """You are running the gdd-generator skill to produce GDD.md from a Requirements Snapshot.
+
+Steps:
+1. Invoke /gdd-generator.
+2. It reads the Requirements Snapshot (provided in the prompt) and calls Write to produce GDD.md in the cwd.
+3. Reply with a one-line summary.
+
+Rules: only use Read/Write; do not re-interpret the game (read from Snapshot, do not add systems not in Snapshot).
+"""
+
+GDD_CHECK_PROMPT = """You are running the gdd-check skill — a hard gate.
+
+Steps:
+1. Invoke /gdd-check.
+2. It checks if a Code Agent can build V1 from this GDD.
+3. Output JSON: {status: PASS|WARNING|BLOCKING, blocking: [...], warnings: [...]}
+
+Rules: only use Read; output strict JSON.
+"""
