@@ -5,23 +5,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.git.service import GitService
 from app.persistence.db import get_sessionmaker
-from app.persistence.repo import ProjectRepo, QuestionRepo
-from app.queue.jobs import (
-    enqueue_brainstorm_questions,
-    enqueue_brainstorm_generate,
-    enqueue_finalize,
-    enqueue_gdd_check,
-)
+from app.persistence.repo import ProjectRepo
+from app.queue.jobs import enqueue_finalize
 from app.schemas.project import (
     ProjectCreate,
     ProjectRead,
-    BrainstormRequest,
     AnswerBody,
     SkipBody,
-    GddBody,
 )
 from app.services import project_service
-from app.workflow.states import ProjectStatus
 from temporal.client import start_design_workflow, send_signal, query_state
 from temporal.workflows import AnswerSignal
 
@@ -91,72 +83,9 @@ async def get_gdd(pid: int, session: AsyncSession = Depends(get_session)):
     return {"gdd_md": gdd_md, "manifest": manifest}
 
 
-@router.post("/projects/{pid}/brainstorm", status_code=202)
-async def start_brainstorm(
-    pid: int, body: BrainstormRequest, session: AsyncSession = Depends(get_session)
-):
-    # 存 idea 到 project.description（供 job2 run_brainstorm_generate 读 idea 拼 prompt）
-    p = await ProjectRepo(session).get(pid)
-    if p is None:
-        raise HTTPException(404, "project not found")
-    if not p.description:
-        await ProjectRepo(session).set_description(pid, body.idea)
-    await session.commit()
-    job_id = await enqueue_brainstorm_questions(pid, body.idea)
-    return {"task_id": job_id}
-
-
-@router.post("/projects/{pid}/brainstorm/answer", status_code=202)
-async def submit_answer(
-    pid: int, body: AnswerBody, session: AsyncSession = Depends(get_session)
-):
-    p = await ProjectRepo(session).get(pid)
-    if p is None:
-        raise HTTPException(404, "project not found")
-    if p.status != ProjectStatus.BRAINSTORMING.value:
-        raise HTTPException(409, f"cannot answer from {p.status}")
-    await QuestionRepo(session).set_answers(pid, 1, body.answers)
-    await session.commit()
-    job_id = await enqueue_brainstorm_generate(pid)
-    return {"task_id": job_id}
-
-
 @router.post("/projects/{pid}/brainstorm/finalize", status_code=202)
 async def finalize_brainstorm(pid: int):
     job_id = await enqueue_finalize(pid)
-    return {"task_id": job_id}
-
-
-@router.post("/projects/{pid}/gdd/approve", status_code=202)
-async def approve_gdd(pid: int, session: AsyncSession = Depends(get_session)):
-    p = await ProjectRepo(session).get(pid)
-    if p is None:
-        raise HTTPException(404, "project not found")
-    if p.status != ProjectStatus.GDD_REVIEW.value:
-        raise HTTPException(409, f"cannot approve from {p.status}")
-    await ProjectRepo(session).set_status(pid, ProjectStatus.GDD_CHECKING)
-    await session.commit()
-    job_id = await enqueue_gdd_check(pid)
-    return {"task_id": job_id}
-
-
-@router.post("/projects/{pid}/gdd/submit", status_code=202)
-async def submit_gdd(pid: int, body: GddBody, session: AsyncSession = Depends(get_session)):
-    """用户编辑后的 GDD.md 写回 worktree，置 GDD_CHECKING 并触发 04 检查。"""
-    p = await ProjectRepo(session).get(pid)
-    if p is None:
-        raise HTTPException(404, "project not found")
-    if p.status != ProjectStatus.GDD_REVIEW.value:
-        raise HTTPException(409, f"cannot submit from {p.status}")
-    git = GitService()
-    wt = await git.worktree_path(p.project_key)
-    if wt is not None:
-        gdd_path = wt / "games" / p.project_key / "GDD.md"
-        gdd_path.parent.mkdir(parents=True, exist_ok=True)
-        gdd_path.write_text(body.gdd_md, encoding="utf-8")
-    await ProjectRepo(session).set_status(pid, ProjectStatus.GDD_CHECKING)
-    await session.commit()
-    job_id = await enqueue_gdd_check(pid)
     return {"task_id": job_id}
 
 

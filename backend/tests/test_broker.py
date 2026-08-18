@@ -148,11 +148,11 @@ async def test_project_repo_create_get_set_status(async_db_session):
     assert await repo.get_by_key("nope") is None
 
     # set_status
-    await repo.set_status(created.id, "BRAINSTORMING")
+    await repo.set_status(created.id, "ANALYZING")
     await async_db_session.commit()
     # 新 session 视角：expire_on_commit=False，对象仍可读
     refreshed = await repo.get(created.id)
-    assert refreshed.status == "BRAINSTORMING"
+    assert refreshed.status == "ANALYZING"
 
 
 # ---------------------------------------------------------------------------

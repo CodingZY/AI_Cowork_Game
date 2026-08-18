@@ -32,7 +32,7 @@ async def client():
     app.dependency_overrides[get_session] = override
     async with sm() as s:
         s.add(Project(project_key="a", name="A", status="CREATED", workspace_root="ws/a"))
-        s.add(Project(project_key="b", name="B", status="GDD_REVIEW", workspace_root="ws/b"))
+        s.add(Project(project_key="b", name="B", status="WAITING_USER", workspace_root="ws/b"))
         await s.commit()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

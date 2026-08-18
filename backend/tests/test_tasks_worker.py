@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.models import Base
 from app.persistence.repo import ProjectRepo
-from app.queue.tasks import run_brainstorm_questions
+from app.queue.tasks import run_finalize
 from app.schemas.event import CoworkEvent, _new_event_id
 
 from tests.conftest import FakeGitService
@@ -109,7 +109,7 @@ from sqlalchemy.pool import StaticPool
 @pytest_asyncio.fixture
 async def db_sm():
     """Sessionmaker backed by sqlite in-memory with StaticPool so all
-    sessions (task internal sessions for run_brainstorm_questions/generate
+    sessions (task internal sessions for run_finalize
     + test assertion sessions) share the same database across connections.
     """
     engine = create_async_engine(
@@ -162,8 +162,8 @@ async def _create_project(sm, key="demo", status="CREATED"):
 # ---------------------------------------------------------------------------
 
 
-def test_worker_settings_has_run_brainstorm():
+def test_worker_settings_has_run_finalize():
     from app.queue.worker import WorkerSettings
 
-    assert run_brainstorm_questions in WorkerSettings.functions
+    assert run_finalize in WorkerSettings.functions
     assert WorkerSettings.redis_settings is not None

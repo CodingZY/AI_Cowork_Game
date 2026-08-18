@@ -33,6 +33,22 @@ async def client(tmp_path, monkeypatch):
             yield s
 
     app.dependency_overrides[get_session] = override_session
+
+    # mock Temporal client（不连真 Temporal Server，与 test_api_temporal.py 一致）
+    async def fake_start(pid, idea):
+        return f"game-{pid}"
+
+    async def fake_query(pid):
+        return {"phase": "WAITING_USER", "progress": {"answered": 0, "total": 0},
+                "currentQuestion": None, "decisions": []}
+
+    async def fake_signal(pid, name, arg):
+        pass
+
+    monkeypatch.setattr("app.api.projects.start_design_workflow", fake_start)
+    monkeypatch.setattr("app.api.projects.query_state", fake_query)
+    monkeypatch.setattr("app.api.projects.send_signal", fake_signal)
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -71,24 +87,3 @@ async def test_get_project(client):
 async def test_get_project_404(client):
     r = await client.get("/api/projects/999")
     assert r.status_code == 404
-
-
-async def test_brainstorm_enqueues(client, monkeypatch):
-    # 先建项目拿到合法 id
-    create = await client.post(
-        "/api/projects", json={"name": "FarmDemo", "description": "d"}
-    )
-    pid = create.json()["id"]
-
-    calls = []
-
-    async def fake_enqueue(project_id: int, idea: str) -> str:
-        calls.append((project_id, idea))
-        return "job-x"
-
-    monkeypatch.setattr("app.api.projects.enqueue_brainstorm_questions", fake_enqueue)
-    r = await client.post(f"/api/projects/{pid}/brainstorm", json={"idea": "种田游戏"})
-    assert r.status_code == 202
-    assert r.json()["task_id"] == "job-x"
-    # 验证用户 idea 透传到 enqueue_brainstorm_questions（C1 防回归）
-    assert calls == [(pid, "种田游戏")]

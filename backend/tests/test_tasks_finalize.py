@@ -43,7 +43,7 @@ async def test_run_finalize_success(db_sm, fake_aioredis, monkeypatch):
     fake_git = FakeGitFinalize()
     monkeypatch.setattr("app.queue.tasks.GitService", lambda: fake_git)
 
-    pid = await _create_project(db_sm, key="fin", status="GDD_APPROVED")
+    pid = await _create_project(db_sm, key="fin", status="COMPLETED")
     # 预置 project_repositories.current_branch
     async with db_sm() as s:
         await ProjectRepositoryRepo(s).create(
@@ -59,10 +59,10 @@ async def test_run_finalize_success(db_sm, fake_aioredis, monkeypatch):
     assert seq == ["commit", "merge", "remove", "push", "tag", "current_sha"]
     # tag 名
     assert fake_git.calls[4] == ("tag", "brainstorm-fin-v0")
-    # project BRAINSTORMED + repo last_sha + branch 清空
+    # project COMPLETED + repo last_sha + branch 清空
     async with db_sm() as s:
         proj = await ProjectRepo(s).get(pid)
-        assert proj.status == ProjectStatus.BRAINSTORMED.value
+        assert proj.status == ProjectStatus.COMPLETED.value
         prow = await ProjectRepositoryRepo(s).get_by_project(pid)
         assert prow.last_commit_sha == "mainsha1"
         assert prow.current_branch is None
@@ -93,7 +93,7 @@ async def test_run_finalize_git_failure(db_sm, fake_aioredis, monkeypatch):
             raise RuntimeError("commit boom")
 
     monkeypatch.setattr("app.queue.tasks.GitService", lambda: FailingGit())
-    pid = await _create_project(db_sm, key="failfin", status="GDD_APPROVED")
+    pid = await _create_project(db_sm, key="failfin", status="COMPLETED")
     async with db_sm() as s:
         await ProjectRepositoryRepo(s).create(
             project_id=pid, owner="o", repository="r", sub_path="games/failfin/")
