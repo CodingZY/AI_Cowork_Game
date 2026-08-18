@@ -12,9 +12,18 @@ from app.queue.jobs import (
     enqueue_finalize,
     enqueue_gdd_check,
 )
-from app.schemas.project import ProjectCreate, ProjectRead, BrainstormRequest, AnswerBody, GddBody
+from app.schemas.project import (
+    ProjectCreate,
+    ProjectRead,
+    BrainstormRequest,
+    AnswerBody,
+    SkipBody,
+    GddBody,
+)
 from app.services import project_service
 from app.workflow.states import ProjectStatus
+from temporal.client import start_design_workflow, send_signal, query_state
+from temporal.workflows import AnswerSignal
 
 router = APIRouter(prefix="/api")
 
@@ -33,6 +42,8 @@ async def create_project(
         session, name=body.name, description=body.description
     )
     await session.commit()
+    # 起 Temporal GameDesignWorkflow（idea 优先用 description，退回 name）
+    await start_design_workflow(p.id, body.description or body.name)
     return ProjectRead(
         id=p.id,
         project_key=p.project_key,
@@ -147,3 +158,26 @@ async def submit_gdd(pid: int, body: GddBody, session: AsyncSession = Depends(ge
     await session.commit()
     job_id = await enqueue_gdd_check(pid)
     return {"task_id": job_id}
+
+
+# --- Temporal 端点（阶段1 GameDesignWorkflow） ---
+
+
+@router.get("/projects/{pid}/state")
+async def get_state(pid: int):
+    """Query GameDesignWorkflow.get_design_state（前端轮询当前阶段/题目/进度）。"""
+    return await query_state(pid)
+
+
+@router.post("/projects/{pid}/answer", status_code=202)
+async def submit_answer(pid: int, body: AnswerBody):
+    """Signal submit_answer（单题答题推进 Workflow）。"""
+    await send_signal(pid, "submit_answer", AnswerSignal(body.question_id, body.answer))
+    return {"ok": True}
+
+
+@router.post("/projects/{pid}/skip", status_code=202)
+async def skip_question(pid: int, body: SkipBody):
+    """Signal skip_question（跳过当前题，用 default_option 或留空）。"""
+    await send_signal(pid, "skip_question", body.question_id)
+    return {"ok": True}

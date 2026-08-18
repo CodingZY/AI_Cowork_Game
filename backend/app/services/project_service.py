@@ -27,12 +27,13 @@ async def create(
     session: AsyncSession,
     name: str,
     description: str | None = None,
-    workspace_base=None,  # Phase 2: 保留参数兼容但不再建目录（worktree 由 brainstorm task 建）
+    workspace_base=None,  # Phase 2: 保留参数兼容但不再建目录（worktree 由 GitService 在 Temporal Activity/finalize 阶段建）
 ) -> Project:
     """生成 project_key、落 Project + ProjectRepository 行，status=CREATED。
 
     workspace_root = workspace/worktrees/{key}-brainstorm（相对路径字符串，
     运行时由 GitService 拼绝对）。不再调 ensure_workspace 建目录（Phase 1 旧路径）。
+    Workflow 由 API 端点 POST /projects 经 start_design_workflow 起（Temporal，不在 service）。
     """
     slug = "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")
     key = f"{slug}-{secrets.token_hex(3)}"

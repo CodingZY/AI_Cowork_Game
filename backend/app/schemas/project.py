@@ -23,7 +23,16 @@ class BrainstormRequest(BaseModel):
 
 
 class AnswerBody(BaseModel):
-    answers: list  # [{question_id, answer}]
+    """单题答题载荷（Temporal 版，逐题 Signal）。"""
+
+    question_id: str
+    answer: str
+
+
+class SkipBody(BaseModel):
+    """跳过单题载荷（skip_question Signal）。"""
+
+    question_id: str
 
 
 class GddBody(BaseModel):
