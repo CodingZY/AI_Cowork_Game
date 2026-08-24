@@ -4,11 +4,15 @@ from enum import Enum
 
 
 class ProjectStatus(str, Enum):
-    """Temporal 版状态（阶段1 GameDesignWorkflow 可观察阶段）。
+    """project.status 真相（由 Temporal workflow 经 update_project_status activity 回写）。
 
-    CREATED → ANALYZING（analyze_idea）→ WAITING_USER（逐题 Signal）
-    → GENERATING_GDD（synthesize+generate）→ CHECKING_GDD（check_gdd）
-    → COMPLETED（PASS/WARNING）/ 回 WAITING_USER（BLOCKING）；FAILED 兜底。
+    Phase 1（GameDesignWorkflow）：
+    CREATED → ANALYZING → WAITING_USER → GENERATING_GDD → CHECKING_GDD
+    → COMPLETED（PASS/WARNING）/ 回 WAITING_USER（BLOCKING）/ FAILED。
+    Phase 2（ArtPipelineWorkflow）：
+    ART_PIPELINE → ART_DONE（COMPLETED）/ ART_FAILED（FAILED）。
+
+    前端 mapStatusToStage 据此映射到 EngineStage 决定跳转页。
     """
 
     CREATED = "CREATED"
@@ -18,3 +22,7 @@ class ProjectStatus(str, Enum):
     CHECKING_GDD = "CHECKING_GDD"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    # Phase 2
+    ART_PIPELINE = "ART_PIPELINE"
+    ART_DONE = "ART_DONE"
+    ART_FAILED = "ART_FAILED"

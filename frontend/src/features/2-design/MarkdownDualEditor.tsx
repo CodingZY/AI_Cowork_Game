@@ -9,7 +9,9 @@ import {
 } from '@/store/useGameStore'
 import { MarkdownView } from '@/components/shared/MarkdownView'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
+import { ART_PHASE_LABEL, ART_PRE_PHASES } from './artPhase'
 
 type DesignTab = 'design' | 'asset'
 
@@ -17,6 +19,7 @@ type DesignTab = 'design' | 'asset'
  * Markdown 双态编辑器：内部「编辑 / 预览」切换。
  * 编辑态用 Monaco 渲染当前 doc，预览态用 MarkdownView 渲染。
  * 当前 doc 由 `tab` 决定：design → game-design.md，asset → 美术素材.md。
+ * asset tab + 真后端 + art 前置阶段 + art-assets.md 未落盘 → 显示「生成中」状态（不显空编辑器）。
  */
 export function MarkdownDualEditor({ tab, className }: { tab: DesignTab; className?: string }) {
   const [mode, setMode] = useState<'edit' | 'preview'>('edit')
@@ -26,11 +29,18 @@ export function MarkdownDualEditor({ tab, className }: { tab: DesignTab; classNa
   const assetDoc = useCurrentAssetDoc()
   const setDesignDoc = useGameStore((s) => s.setDesignDoc)
   const setAssetDoc = useGameStore((s) => s.setAssetDoc)
+  const artPhase = useGameStore((s) => s.artState?.phase)
 
   const isDesign = tab === 'design'
   const doc = isDesign ? designDoc : assetDoc
   const setDoc = isDesign ? setDesignDoc : setAssetDoc
   const fileName = isDesign ? `${game?.name ?? '未命名'}-game-design.md` : '美术素材.md'
+
+  // 真后端 + asset tab + art 前置阶段 + 无 art-assets.md → 生成中状态
+  const isRealProject = !!(game && /^\d+$/.test(game.id))
+  const generating = !isDesign && isRealProject
+    && ART_PRE_PHASES.has(artPhase ?? '')
+    && !doc.trim()
 
   return (
     <div
@@ -44,6 +54,11 @@ export function MarkdownDualEditor({ tab, className }: { tab: DesignTab; classNa
         <div className="flex min-w-0 items-center gap-2">
           <FileText className="size-4 shrink-0 text-ink-3" />
           <span className="truncate font-mono text-xs text-ink-2">{fileName}</span>
+          {generating && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] text-accent">
+              <Spinner className="size-3" /> 生成中
+            </span>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1 rounded-lg border border-line bg-canvas/50 p-1">
           <button
@@ -71,7 +86,16 @@ export function MarkdownDualEditor({ tab, className }: { tab: DesignTab; classNa
 
       {/* 编辑 / 预览主体 */}
       <div className="min-h-0 flex-1">
-        {mode === 'edit' ? (
+        {generating ? (
+          // 生成中：art-assets.md 未落盘，显示当前 art phase 状态（不显空编辑器）
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-ink-3">
+            <Spinner className="size-6 text-accent" />
+            <span className="text-sm">
+              {ART_PHASE_LABEL[artPhase ?? ''] ?? '生成美术配置中…'}…
+            </span>
+            <span className="text-xs text-ink-3">完成后自动填入美术素材清单</span>
+          </div>
+        ) : mode === 'edit' ? (
           <Editor
             height="100%"
             language="markdown"

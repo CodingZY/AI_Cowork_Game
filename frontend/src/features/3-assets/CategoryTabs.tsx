@@ -1,25 +1,30 @@
 import { useMemo } from 'react'
-import { useCurrentAssets, useGameStore } from '@/store/useGameStore'
-import { CATEGORY_LABEL, CATEGORY_EMOJI, type AssetCategory } from '@/types'
+import { useGameStore } from '@/store/useGameStore'
+import { CATEGORY_LABEL, CATEGORY_EMOJI, type AssetCategory, type AssetItem } from '@/types'
 import { cn } from '@/lib/utils'
 
-const TABS: Array<AssetCategory | 'all'> = ['all', 'background', 'character', 'item', 'ui']
+const TABS: Array<AssetCategory | 'all'> = [
+  'all', 'character', 'npc', 'building', 'animal', 'plant', 'prop', 'map', 'ui', 'icon',
+  'facility', 'resource', 'environment', 'threat', 'vfx', 'lighting', 'screen',
+]
 
-/** 顶部素材分类切换 + 各分类计数。 */
-export function CategoryTabs() {
-  const assets = useCurrentAssets()
+/** 顶部素材分类切换 + 各分类计数。
+ * assets 由 AssetStudio 传入（真后端 realAssets / mock 链路 useCurrentAssets）——
+ * 与卡片显示同源，避免 CategoryTabs 自取 useCurrentAssets() 导致真项目计数全 0。
+ */
+export function CategoryTabs({ assets }: { assets: AssetItem[] }) {
   const filter = useGameStore((s) => s.assetFilter)
   const setAssetFilter = useGameStore((s) => s.setAssetFilter)
 
   const counts = useMemo(() => {
     const c: Record<AssetCategory | 'all', number> = {
-      all: assets.length,
-      background: 0,
-      character: 0,
-      item: 0,
-      ui: 0,
+      all: assets.length, character: 0, npc: 0, building: 0, animal: 0,
+      plant: 0, prop: 0, map: 0, ui: 0, icon: 0, background: 0, item: 0,
+      facility: 0, resource: 0, environment: 0, threat: 0, vfx: 0, lighting: 0, screen: 0,
     }
-    for (const a of assets) c[a.category] += 1
+    for (const a of assets) {
+      if (a.category in c) c[a.category as AssetCategory] += 1
+    }
     return c
   }, [assets])
 

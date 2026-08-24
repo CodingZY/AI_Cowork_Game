@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react'
-import { useGameStore } from '@/store/useGameStore'
+import { useEffect, useRef, useMemo } from 'react'
+import { useGameStore, useDevState, useIsRealDevProject } from '@/store/useGameStore'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -23,12 +23,67 @@ const LEVEL_COLOR: Record<TerminalLog['level'], string> = {
   error: 'text-danger',
 }
 
-/** 中栏下：终端 / 自检日志面板，按 level 着色，自动滚到底。 */
+// 真项目 dev phase → CodeCheckStatus
+function mapDevPhaseToCheck(phase: string): CodeCheckStatus {
+  switch (phase) {
+    case 'TESTING': return 'AUTO_FIXING'
+    case 'DEV_FAILED':
+    case 'FAILED': return 'HEADLESS_FAILED'
+    case 'WAITING_FOR_USER':
+    case 'PLAYTEST_READY':
+    case 'COMPLETED': return 'HEADLESS_PASSED'
+    default: return 'IDLE'
+  }
+}
+
+/** 中栏下：终端 / 自检日志。
+ * 真后端：从 devState（phase 变化 + build_log + contracts_done）派生日志。
+ * mock：store terminalLogs。 */
 export function TerminalLogs() {
-  const logs = useGameStore((s) => s.terminalLogs)
-  const codeCheck = useGameStore((s) => s.codeCheck)
-  const codeChecking = useGameStore((s) => s.codeChecking)
+  const isReal = useIsRealDevProject()
+  const devState = useDevState()
+  const mockLogs = useGameStore((s) => s.terminalLogs)
+  const mockCodeCheck = useGameStore((s) => s.codeCheck)
+  const mockCodeChecking = useGameStore((s) => s.codeChecking)
   const ref = useRef<HTMLDivElement>(null)
+
+  // 真项目：派生日志（phase + build_log + 进度）
+  const devLogs: TerminalLog[] = useMemo(() => {
+    if (!isReal || !devState) return []
+    const logs: TerminalLog[] = []
+    const ts = Date.now()
+    const phaseLabel: Record<string, string> = {
+      PLANNING_CONTRACTS: 'Spec 拆分（freeze + contracts）…',
+      VALIDATING_CONTRACTS: '校验 contracts…',
+      EXECUTING_WAVES: `代码编写中… wave ${devState.current_wave}/${devState.total_waves} · done ${devState.contracts_done}`,
+      TESTING: '构建/自检（tsc + vite build）…',
+      DEPLOYING: '部署中…',
+      PLAYTEST_READY: '部署完成，可试玩',
+      WAITING_FOR_USER: '等待用户反馈（PASS/FIX/CHANGE）',
+      COMPLETED: '所有版本完成',
+      DEV_FAILED: 'Build 失败',
+      FAILED: '失败',
+    }
+    if (phaseLabel[devState.phase]) {
+      const lvl = devState.phase === 'DEV_FAILED' || devState.phase === 'FAILED' ? 'error'
+        : devState.phase === 'PLAYTEST_READY' || devState.phase === 'WAITING_FOR_USER' || devState.phase === 'COMPLETED' ? 'success'
+        : 'info'
+      logs.push({ id: `phase-${devState.phase}`, ts, level: lvl as TerminalLog['level'], text: `> ${phaseLabel[devState.phase]}` })
+    }
+    if (devState.build_log) {
+      // build_log 含 tsc/vite 输出，按行拆，错误行标 error
+      for (const line of devState.build_log.split('\n').slice(-15)) {
+        if (!line.trim()) continue
+        const isErr = /error|failed|Error/i.test(line)
+        logs.push({ id: `bl-${ts}-${line.slice(0, 8)}`, ts, level: isErr ? 'error' : 'info', text: line })
+      }
+    }
+    return logs
+  }, [isReal, devState])
+
+  const logs = isReal ? devLogs : mockLogs
+  const codeCheck = isReal ? mapDevPhaseToCheck(devState?.phase ?? 'CREATED') : mockCodeCheck
+  const codeChecking = isReal ? (devState?.phase === 'TESTING' || devState?.phase === 'EXECUTING_WAVES') : mockCodeChecking
 
   useEffect(() => {
     const el = ref.current

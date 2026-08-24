@@ -98,8 +98,16 @@ def test_parse_result_completed():
     evts = ClaudeEventParser(project_id=1).parse(line)
     assert len(evts) == 1
     assert evts[0].type == "agent.session.completed"
-    assert evts[0].data == {"session_id": "sid-1", "result": "4",
-                            "stop_reason": "end_turn", "cost": 0.01, "duration": 100}
+    d = evts[0].data
+    assert d["session_id"] == "sid-1"
+    assert d["result"] == "4"
+    assert d["stop_reason"] == "end_turn"
+    assert d["cost"] == 0.01
+    assert d["duration"] == 100
+    # 单行 result 无 message_start/message_delta 前置 + result 无 usage -> token 为 0
+    assert d["input_tokens"] == 0
+    assert d["output_tokens"] == 0
+    assert d["total_tokens"] == 0
 
 
 def test_parse_result_refusal():

@@ -220,7 +220,7 @@ export function assetPreview(item: Pick<AssetItem, 'key' | 'category' | 'transpa
     item: '🧱',
     ui: '🧩',
   }
-  const hueMap: Record<AssetCategory, number> = { background: 35, character: 160, item: 50, ui: 190 }
+  const hueMap: Partial<Record<AssetCategory, number>> = { background: 35, character: 160, item: 50, ui: 190 }
   return svgAsset(item.key, {
     transparent: item.transparent && item.status === 'done',
     hue: hueMap[item.category],

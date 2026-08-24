@@ -36,6 +36,9 @@ class ClaudeEventParser:
     def __init__(self, project_id: int, agent_type: str = "brainstorm"):
         self.project_id = project_id
         self.agent_type = agent_type
+        # Token 累加器：跨多 turn message_start/message_delta 累计（Observability）
+        self._input_tokens: int = 0
+        self._output_tokens: int = 0
 
     # ---- public API ---------------------------------------------------------
 
@@ -122,7 +125,17 @@ class ClaudeEventParser:
             # thinking / text 的 content_block_start：不产事件
             return []
 
-        # message_start / message_delta / message_stop / content_block_stop 等：不产
+        if et == "message_start":
+            # message_start.message.usage.input_tokens = 本次 API 调用输入 token（含历史上下文）
+            usage = event.get("message", {}).get("usage", {}) or {}
+            self._input_tokens += int(usage.get("input_tokens", 0) or 0)
+            return []
+        if et == "message_delta":
+            # message_delta.usage.output_tokens = 本次 API 调用输出 token（累积值）
+            usage = event.get("usage", {}) or {}
+            self._output_tokens += int(usage.get("output_tokens", 0) or 0)
+            return []
+        # message_stop / content_block_stop 等：不产
         return []
 
     def _handle_user(self, obj: dict, raw: str) -> list[CoworkEvent]:
@@ -178,10 +191,18 @@ class ClaudeEventParser:
             return [self._evt("agent.session.failed",
                               {"reason": "runtime_error", "result": result}, raw)]
         # 3) 非 error（含 end_turn）-> completed
+        # Token：优先用 result 事件回传的 usage（KSPMAS 若回传），否则用 stream 累加兜底
+        ru = obj.get("usage") if isinstance(obj.get("usage"), dict) else None
+        input_tokens = ru.get("input_tokens", self._input_tokens) if ru else self._input_tokens
+        output_tokens = ru.get("output_tokens", self._output_tokens) if ru else self._output_tokens
+        total_tokens = ru.get("total_tokens", input_tokens + output_tokens) if ru else (input_tokens + output_tokens)
         return [self._evt("agent.session.completed", {
             "session_id": obj.get("session_id"),
             "result": result,
             "stop_reason": stop_reason,
             "cost": obj.get("total_cost_usd"),
             "duration": obj.get("duration_ms"),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
         }, raw)]

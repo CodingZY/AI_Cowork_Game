@@ -1,10 +1,18 @@
-// game-template canvas skeleton (spec §108: TS/Vite/Canvas)
-const canvas = document.getElementById('game') as HTMLCanvasElement
-const ctx = canvas.getContext('2d')!
+import Phaser from 'phaser'
 
-function loop() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height)
-  requestAnimationFrame(loop)
-}
-
-loop()
+// game-template minimal Phaser entry (Phase 3: only main.ts in template src/)
+// code-generator will create src/scenes/* and wire them here via the Integration contract.
+// Until then, an inline placeholder scene keeps the build green.
+new Phaser.Game({
+  type: Phaser.AUTO,
+  parent: 'game',
+  width: 800,
+  height: 600,
+  pixelArt: true,
+  scene: {
+    key: 'Placeholder',
+    create(this: Phaser.Scene) {
+      this.add.text(16, 16, 'Game not implemented yet.', { fontSize: '16px', color: '#ffffff' })
+    },
+  },
+})

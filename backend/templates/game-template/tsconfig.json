@@ -5,7 +5,13 @@
     "moduleResolution": "bundler",
     "strict": true,
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": ["vitest/globals"],
+    "allowJs": false,
+    "checkJs": false,
+    "outDir": "dist",
+    "noEmit": false
   },
-  "include": ["src"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules"]
 }

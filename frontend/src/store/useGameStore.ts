@@ -12,6 +12,7 @@ import type {
   FileNode,
   GameMeta,
   GitVersion,
+  ModuleStatus,
   PreviewState,
   TerminalLog,
 } from '@/types'
@@ -28,7 +29,6 @@ import {
   mockDesignDoc,
   mockFileContents,
   mockFileTree,
-  mockGames,
   mockModules,
   mockTerminalLogs,
   mockVersions,
@@ -117,6 +117,7 @@ interface GameState {
   // actions: global
   selectGame: (id: string) => void
   setAgentStatus: (s: AgentStatus) => void
+  loadGames: () => Promise<void>
 
   // actions: brainstorm
   startNewGame: (name: string) => string
@@ -131,6 +132,13 @@ interface GameState {
   setDesignTab: (t: 'design' | 'asset') => void
   confirmDesignDoc: () => void
   confirmAssetDoc: () => void
+  // 文档落盘状态：dirty=已改未存，saved=true=已落盘；save 触发真落盘
+  designDirty: boolean
+  assetDirty: boolean
+  designSaved: boolean
+  assetSaved: boolean
+  saveDesignDoc: () => Promise<void>   // 落盘 GDD.md（真后端 project）
+  saveAssetDoc: () => Promise<void>    // 落盘 art-assets.md（真后端 project）
   askDesignCopilot: (instruction: string, which: 'design' | 'asset') => void
 
   // actions: assets
@@ -171,8 +179,7 @@ interface GameState {
   submitRealAnswers: () => Promise<void>
   loadGdd: () => Promise<void>
   setGddMd: (text: string) => void
-  submitRealGdd: () => Promise<void>
-  approveRealGdd: () => Promise<void>
+  saveGdd: () => Promise<void>
   finalizeRealGdd: () => Promise<void>
   handleSSEEvent: (e: CoworkEvent) => void
   setRealAnswer: (qid: string, answer: string) => void
@@ -186,6 +193,42 @@ interface GameState {
   stopPoll: () => void
   submitAnswer: (qid: string, answer: string) => Promise<void>
   skipQuestion: (qid: string) => Promise<void>
+
+  // 阶段2 美术资产（真后端 ArtPipelineWorkflow）
+  artState: api.ArtState | null
+  artAssets: api.ArtAssetSpec[]   // assets.json 完整 spec（含 prompt/visual）
+  artPollTimer: number | null
+  loadArtAssets: () => Promise<void>          // GET /art/assets 拉完整 spec
+  ensureArtPoll: () => void                    // 启动/恢复 2s 轮询 art state
+  pollArtState: () => Promise<void>
+  stopArtPoll: () => void
+  startArtPipeline: () => Promise<void>       // POST /art/pipeline
+  approveArt: () => Promise<void>              // POST /art/approve（ART_REVIEW gate）
+  startGeneration: () => Promise<void>        // POST /art/start-generation（SPEC_REVIEW 触发生图）
+  retryArtAsset: (assetId: string) => Promise<void>  // POST /art/retry/{id}
+  artAssetPrompts: Record<string, { prompt: string; negative_prompt: string }>  // 真 prompt 文件缓存（asset_id → 内容）
+  regeneratingAssets: Record<string, boolean>  // 单资产重生中（乐观态，卡片显 spinner）
+  artImgNonce: Record<string, number>          // 资产图 cache-bust 版本（重生后 bump）
+  imageModel: 'hunyuan' | 'seedream'            // 当前项目选的文生图模型（缺省 hunyuan）
+  loadArtAssetPrompt: (assetId: string) => Promise<void>      // GET /art/asset/{id}/prompt
+  regenerateArtAsset: (assetId: string, prompt: string, neg: string) => Promise<void>  // POST regenerate（写 prompt + AutoDL 重生）
+  loadImageModel: () => Promise<void>           // GET /art/image-model 拉当前项目模型选择
+  setImageModel: (model: 'hunyuan' | 'seedream') => Promise<void>  // POST /art/image-model 落盘
+
+  // 阶段3 代码迭代（真后端 GameDevelopmentWorkflow）
+  devState: api.DevState | null
+  devPollTimer: number | null
+  devGitTags: api.DevGitTag[]
+  devSrcTree: FileNode[]    // worktree src/ 真文件树（替代 mock fileTree，结构与 FileNode 兼容）
+  devFileContent: string           // 当前选中 src 文件内容
+  ensureDevPoll: () => void                    // 启动/恢复 2s 轮询 dev state
+  pollDevState: () => Promise<void>
+  stopDevPoll: () => void
+  startDevPipeline: () => Promise<void>       // POST /develop/pipeline
+  submitDevFeedback: (action: 'PASS' | 'FIX' | 'CHANGE', note?: string) => Promise<void>  // POST /develop/feedback
+  loadDevGitTags: () => Promise<void>         // GET /develop/git-tags（版本历史=发布 tag）
+  loadDevSrcTree: () => Promise<void>        // GET /develop/src-tree（真代码文件树）
+  loadDevSrcFile: (path: string) => Promise<void>  // GET /develop/src-file?path=（文件内容）
 }
 
 // ── 纯函数 helper：操作当前游戏的素材数组 ─────────────────
@@ -243,9 +286,166 @@ function beginPoll(
   set(() => ({ pollTimer: t }))
 }
 
+// ── 真后端 Project → GameMeta 映射（已存档列表/切换器用）──
+// status 由 Temporal workflow 经 update_project_status activity 回写 DB，是跳转真相源。
+function mapStatusToStage(status: string): EngineStage {
+  switch (status) {
+    // Phase 3 代码迭代阶段：dev 各状态 + DEV_DONE/DEV_FAILED 都属代码迭代页
+    case 'ART_DONE':
+    case 'DEV_PLANNING':
+    case 'DEV_PLANNING_CONTRACTS':
+    case 'DEV_VALIDATING_CONTRACTS':
+    case 'DEV_EXECUTING_WAVES':
+    case 'DEV_TESTING':
+    case 'DEV_DEPLOYING':
+    case 'DEV_PLAYTEST_READY':
+    case 'DEV_DONE':
+    case 'DEV_FAILED':
+      return 'STAGE_4_CODE_ITERATION' // 美术完成/代码迭代中/完成/失败，都在代码迭代页
+    case 'ART_PIPELINE':
+    case 'ART_FAILED':
+      return 'STAGE_3_ASSET_PIPELINE' // 美术管线中/失败，在素材页
+    case 'COMPLETED':
+      return 'STAGE_3_ASSET_PIPELINE' // Phase 1 GDD 批准，可进素材管线
+    case 'GENERATING_GDD':
+    case 'CHECKING_GDD':
+    case 'GDD_REVIEW':
+      return 'STAGE_2_DESIGN_DOC' // GDD 生成/审核中，在设计文档页
+    case 'CREATED':
+    case 'ANALYZING':
+    case 'WAITING_USER':
+    case 'BRAINSTORMING':
+    default:
+      return 'STAGE_1_BRAINSTORM'
+  }
+}
+
+/** dev phase → StageStrip 节点序号（0=Spec 拆分 / 1=代码编写自检 / 2=Web 试玩 / 3=模块完成 / -1=失败）。
+ * Web 试玩：每个版本 build 成功给出 playtest_url 即点亮；模块完成：COMPLETED 点亮。 */
+function mapDevPhaseToNode(phase: string, playtestUrl?: string): number {
+  if (phase === 'DEV_FAILED' || phase === 'FAILED') return -1        // 失败
+  if (phase === 'COMPLETED') return 3                                 // 模块完成
+  if (playtestUrl) return 2                                           // Web 试玩（build 成功给 URL 即点亮）
+  switch (phase) {
+    case 'PLANNING_CONTRACTS': return 0                               // Spec 拆分
+    case 'VALIDATING_CONTRACTS':
+    case 'EXECUTING_WAVES':
+    case 'TESTING':
+    case 'DEPLOYING': return 1                                        // 代码编写/自检（部署中 URL 未就绪仍归此）
+    case 'PLAYTEST_READY':
+    case 'WAITING_FOR_USER': return 2                                // ready 但 url 暂空兜底显 Web 试玩
+    default: return 0
+  }
+}
+
+/** dev phase → ModuleStatus（FileTree 模块控制用，照 §E） */
+function mapDevPhaseToModuleStatus(phase: string): ModuleStatus {
+  switch (phase) {
+    case 'PLANNING_CONTRACTS': return 'spec'
+    case 'VALIDATING_CONTRACTS':
+    case 'EXECUTING_WAVES': return 'coding'
+    case 'TESTING': return 'headless'
+    case 'DEPLOYING':
+    case 'PLAYTEST_READY':
+    case 'WAITING_FOR_USER':
+    case 'COMPLETED': return 'playtest'
+    case 'DEV_FAILED':
+    case 'FAILED': return 'headless'  // 失败显自检失败
+    default: return 'spec'
+  }
+}
+
+/** dev versions → CodeModule[]（已完成=done，当前=随 phase，未来=spec；progress 从 wave 估）。 */
+function mapDevVersionsToModules(st: api.DevState | null): CodeModule[] {
+  if (!st || !st.versions?.length) return []
+  return st.versions.map((v, idx) => {
+    const isPast = idx < st.current_idx
+    const isCurrent = idx === st.current_idx
+    let status: ModuleStatus = 'spec'
+    let progress = 0
+    if (isPast) {
+      status = 'done'
+      progress = 100
+    } else if (isCurrent) {
+      status = mapDevPhaseToModuleStatus(st.phase)
+      // progress 从 wave/contracts 估
+      const tw = st.total_waves || 1
+      const wavePart = st.current_wave / tw
+      const donePart = st.total_waves ? 0 : 0
+      progress = st.phase === 'COMPLETED' ? 100
+        : st.phase === 'WAITING_FOR_USER' || st.phase === 'PLAYTEST_READY' ? 95
+        : st.phase === 'TESTING' || st.phase === 'DEPLOYING' ? 90
+        : Math.round((wavePart + (st.contracts_done / Math.max(st.total_waves * 3, 1)) * 0.3) * 100)
+      if (st.phase === 'DEV_FAILED' || st.phase === 'FAILED') progress = Math.max(progress, 50)
+      void donePart
+    } else {
+      status = 'spec'
+      progress = 0
+    }
+    return {
+      id: v,
+      version: v,
+      title: `${v} 版本`,
+      status,
+      progress,
+      spec: '',
+    }
+  })
+}
+
+function mapProjectToGame(p: api.ProjectRead): GameMeta {
+  return {
+    id: String(p.id),
+    name: p.name,
+    cover: '🎮',
+    genre: '',
+    currentStage: mapStatusToStage(p.status),
+    updatedAt: 0,
+    description: '',
+  }
+}
+
+/** 当前选中游戏的数字 project_id（真后端 project）；mock 假游戏（id 非数字）返 null。 */
+function currentNumericProjectId(state: GameState): number | null {
+  const id = state.currentGameId
+  if (id && /^\d+$/.test(id)) return Number(id)
+  return null
+}
+
+/** 智能生图：轮询 workflow 状态，到 SPEC_REVIEW 自动 signal start_generation（最多等 5 分钟）。
+ * 用于 startGeneration 在 workflow 需重起/前置阶段时——重起后跑 art-style/spec/prompts 约 1-2 分钟到 SPEC_REVIEW，
+ * 到了自动触发生图，用户无需再手动点。
+ */
+const _autoSignalTimers: Record<number, number> = {}
+function _autoSignalWhenSpecReview(pid: number) {
+  if (_autoSignalTimers[pid] != null) return  // 已在等待
+  const started = Date.now()
+  const tick = async () => {
+    if (Date.now() - started > 5 * 60 * 1000) {  // 超时放弃
+      window.clearInterval(_autoSignalTimers[pid])
+      delete _autoSignalTimers[pid]
+      return
+    }
+    try {
+      const wf = await api.getArtWorkflowStatus(pid)
+      if (wf.status === 'RUNNING' && wf.phase === 'SPEC_REVIEW') {
+        await api.startGeneration(pid)
+        window.clearInterval(_autoSignalTimers[pid])
+        delete _autoSignalTimers[pid]
+      } else if (wf.status === 'RUNNING' && wf.phase === 'GENERATING_ASSETS') {
+        // 已开始生图（可能用户手动 signal 过）→ 停止自动等待
+        window.clearInterval(_autoSignalTimers[pid])
+        delete _autoSignalTimers[pid]
+      }
+    } catch { /* 继续等 */ }
+  }
+  void tick()
+  _autoSignalTimers[pid] = window.setInterval(() => { void tick() }, 3000)
+}
+
 export const useGameStore = create<GameState>()((set, get) => ({
-  games: mockGames,
-  currentGameId: 'game_farmer',
+  games: [],
+  currentGameId: null,
   agentStatus: 'waiting',
 
   chats: { game_rogue: rogueBrainstormChat },
@@ -260,6 +460,11 @@ export const useGameStore = create<GameState>()((set, get) => ({
   assetFilter: 'all',
   designTab: 'design',
 
+  designDirty: false,
+  assetDirty: false,
+  designSaved: false,
+  assetSaved: false,
+
   brainstormStreaming: false,
   codeChecking: false,
 
@@ -269,6 +474,9 @@ export const useGameStore = create<GameState>()((set, get) => ({
     if (!g) return
     get().cancelStream?.()
     get().cancelCheck?.()
+    get().stopPoll()   // 切走前停旧项目轮询（真后端）
+    get().stopArtPoll()
+    get().stopDevPoll()
     set({
       currentGameId: id,
       agentStatus: g.currentStage === 'STAGE_1_BRAINSTORM' ? 'waiting' : 'idle',
@@ -279,9 +487,43 @@ export const useGameStore = create<GameState>()((set, get) => ({
       assetFilter: 'all',
       designTab: 'design',
     })
+    // 真后端项目（数字 id）：拉 realProject + 重置 design 状态 + 启轮询
+    // 否则 SuperpowerChat 的 `if (project)` 不成立，会走 mock 链路、不查 getState → 切到已存档真项目看不到题
+    if (/^\d+$/.test(id)) {
+      const pid = Number(id)
+      void api.getProject(pid).then((p) => {
+        // 切走期间可能又选了别的游戏，校验仍选中本项目才设
+        if (get().currentGameId !== id) return
+        set({
+          realProject: p,
+          realQuestions: [],
+          realAnswers: [],
+          gddContent: null,
+          gddMd: '',
+          designState: null,
+        })
+        get().ensurePoll()
+      }).catch(() => { /* 后端未起：realProject 保持 null，走 mock 兜底 */ })
+    } else {
+      // mock 项目：清掉残留的真后端态，避免 mock 页面误显真项目数据
+      set({ realProject: null, designState: null, gddContent: null, gddMd: '', realQuestions: [], realAnswers: [] })
+    }
   },
 
   setAgentStatus: (s) => set({ agentStatus: s }),
+
+  loadGames: async () => {
+    try {
+      const projects = await api.listProjects()
+      const mapped = projects.map(mapProjectToGame)
+      set((s) => ({
+        games: mapped,
+        currentGameId: s.currentGameId ?? mapped[0]?.id ?? null,
+      }))
+    } catch {
+      // 后端未起/网络错：保留空列表，不崩
+    }
+  },
 
   // ── brainstorm ──────────────────────────────────────────
   startNewGame: (name) => {
@@ -395,14 +637,34 @@ export const useGameStore = create<GameState>()((set, get) => ({
   setDesignDoc: (text) => {
     const id = get().currentGameId
     if (!id) return
-    set((s) => ({ designDocs: { ...s.designDocs, [id]: text } }))
+    set((s) => ({ designDocs: { ...s.designDocs, [id]: text }, designDirty: true, designSaved: false }))
   },
   setAssetDoc: (text) => {
     const id = get().currentGameId
     if (!id) return
-    set((s) => ({ assetDocs: { ...s.assetDocs, [id]: text } }))
+    set((s) => ({ assetDocs: { ...s.assetDocs, [id]: text }, assetDirty: true, assetSaved: false }))
   },
   setDesignTab: (t) => set({ designTab: t }),
+
+  saveDesignDoc: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) { set({ designDirty: false, designSaved: true }); return }
+    const md = get().designDocs[get().currentGameId!] ?? ''
+    try {
+      await api.saveGdd(pid, md)
+      set({ designDirty: false, designSaved: true })
+    } catch { /* 落盘失败保留 dirty */ }
+  },
+
+  saveAssetDoc: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) { set({ assetDirty: false, assetSaved: true }); return }
+    const md = get().assetDocs[get().currentGameId!] ?? ''
+    try {
+      await api.saveArtAssetsMd(pid, md)
+      set({ assetDirty: false, assetSaved: true })
+    } catch { /* 落盘失败保留 dirty */ }
+  },
 
   confirmDesignDoc: () => {
     const id = get().currentGameId
@@ -601,16 +863,11 @@ export const useGameStore = create<GameState>()((set, get) => ({
     }
   },
 
-  submitRealGdd: async () => {
+  saveGdd: async () => {
     const p = get().realProject
     if (!p) return
-    await api.submitGdd(p.id, get().gddMd)
-  },
-
-  approveRealGdd: async () => {
-    const p = get().realProject
-    if (!p) return
-    await api.approveGdd(p.id)
+    await api.saveGdd(p.id, get().gddMd)
+    void get().pollState()
   },
 
   finalizeRealGdd: async () => {
@@ -648,7 +905,13 @@ export const useGameStore = create<GameState>()((set, get) => ({
     if (!p) return
     try {
       const st = await api.getState(p.id)
+      const prevPhase = get().designState?.phase
       set({ designState: st })
+      // (重新)进入 GDD_REVIEW：用 workflow 产出的 GDD 刷新编辑器内容。
+      // 仅在 phase 切入 GDD_REVIEW 时刷新，编辑期间（phase 不变）不覆盖用户改动。
+      if (st.phase === 'GDD_REVIEW' && prevPhase !== 'GDD_REVIEW' && st.gdd != null) {
+        set({ gddMd: st.gdd })
+      }
       if (st.phase === 'COMPLETED' || st.phase === 'FAILED') get().stopPoll()
     } catch {
       // 瞬时网络错误：保留旧 designState，继续轮询
@@ -674,6 +937,212 @@ export const useGameStore = create<GameState>()((set, get) => ({
     await api.skipQuestion(p.id, qid)
     void get().pollState()
   },
+
+  // ── 阶段2 美术资产（真后端）────────────────────────────────
+  artState: null,
+  artAssets: [],
+  artPollTimer: null,
+  artAssetPrompts: {},
+  regeneratingAssets: {},
+  artImgNonce: {},
+  imageModel: 'hunyuan',
+
+  // 阶段3 代码迭代
+  devState: null,
+  devPollTimer: null,
+  devGitTags: [],
+  devSrcTree: [],
+  devFileContent: '',
+
+  loadArtAssets: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    try {
+      const r = await api.getArtAssets(pid)
+      set({ artAssets: r.assets ?? [] })
+    } catch { /* 忽略 */ }
+  },
+
+  ensureArtPoll: () => {
+    if (get().artPollTimer != null) return
+    void get().pollArtState()
+    void get().loadArtAssets()
+    const t = window.setInterval(() => { void get().pollArtState() }, 2000)
+    set({ artPollTimer: t })
+  },
+
+  pollArtState: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    try {
+      const st = await api.getArtState(pid)
+      set({ artState: st })
+      // 首次进入有资产（GENERATING_ASSETS 之后）拉一次完整 spec
+      if (st.assets?.length && get().artAssets.length === 0) {
+        void get().loadArtAssets()
+      }
+      if (st.phase === 'COMPLETED' || st.phase === 'FAILED') get().stopArtPoll()
+    } catch { /* 瞬时错误保留旧态 */ }
+  },
+
+  stopArtPoll: () => {
+    const t = get().artPollTimer
+    if (t != null) window.clearInterval(t)
+    set({ artPollTimer: null })
+  },
+
+  startArtPipeline: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    await api.startArtPipeline(pid)
+    void get().loadArtAssets()
+    get().ensureArtPoll()
+  },
+
+  approveArt: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    await api.approveArt(pid)
+    void get().pollArtState()
+  },
+
+  startGeneration: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    // 智能处理：查 workflow 状态决定直接 signal 还是先重起
+    try {
+      const wf = await api.getArtWorkflowStatus(pid)
+      if (wf.status === 'RUNNING' && wf.phase === 'SPEC_REVIEW') {
+        // workflow 真在 SPEC_REVIEW → 直接触发生图
+        await api.startGeneration(pid)
+        void get().pollArtState()
+        return
+      }
+      if (wf.status === 'RUNNING' && wf.phase && !['COMPLETED', 'FAILED', 'ART_REVIEW'].includes(wf.phase)) {
+        // workflow 在跑前置阶段（art-style/spec/prompts）→ 提示等待，到 SPEC_REVIEW 自动 signal
+        _autoSignalWhenSpecReview(pid)
+        return
+      }
+    } catch { /* 查询失败，继续走重起 */ }
+    // workflow 不存在/已结束/僵尸 → terminate 兜底 + 重起，到 SPEC_REVIEW 自动 signal
+    try { await api.terminateArt(pid) } catch { /* 忽略 */ }
+    await api.startArtPipeline(pid)
+    void get().loadArtAssets()
+    get().ensureArtPoll()
+    _autoSignalWhenSpecReview(pid)
+  },
+
+  retryArtAsset: async (assetId) => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    await api.retryArtAsset(pid, assetId)
+    void get().pollArtState()
+  },
+
+  loadArtAssetPrompt: async (assetId) => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    try {
+      const r = await api.getArtAssetPrompt(pid, assetId)
+      set({ artAssetPrompts: { ...get().artAssetPrompts, [assetId]: r } })
+    } catch { /* 忽略，对话框兜底显示 asset.prompt */ }
+  },
+
+  regenerateArtAsset: async (assetId, prompt, neg) => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) throw new Error('无当前项目')
+    set({ regeneratingAssets: { ...get().regeneratingAssets, [assetId]: true } })
+    try {
+      await api.regenerateArtAsset(pid, assetId, { prompt, negative_prompt: neg })
+      // 成功：bump cache-bust（图换新）+ 刷新 art state（B8 fallback 从磁盘推断）+ 更新 prompt 缓存
+      set({
+        artImgNonce: { ...get().artImgNonce, [assetId]: (get().artImgNonce[assetId] ?? 0) + 1 },
+        artAssetPrompts: { ...get().artAssetPrompts, [assetId]: { prompt, negative_prompt: neg } },
+      })
+      void get().pollArtState()
+    } finally {
+      set({ regeneratingAssets: { ...get().regeneratingAssets, [assetId]: false } })
+    }
+  },
+
+  loadImageModel: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    try {
+      const r = await api.getArtImageModel(pid)
+      if (r.model === 'hunyuan' || r.model === 'seedream') set({ imageModel: r.model })
+    } catch { /* 忽略，保持默认 hunyuan */ }
+  },
+  setImageModel: async (model) => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    set({ imageModel: model })  // 乐观更新 UI
+    try {
+      await api.setArtImageModel(pid, model)
+    } catch {
+      // 落盘失败回滚
+      set({ imageModel: model === 'hunyuan' ? 'seedream' : 'hunyuan' })
+    }
+  },
+
+  // ── 阶段3 代码迭代（真后端 GameDevelopmentWorkflow）──
+  ensureDevPoll: () => {
+    if (get().devPollTimer != null) return
+    void get().pollDevState()
+    const t = window.setInterval(() => { void get().pollDevState() }, 2000)
+    set({ devPollTimer: t })
+  },
+  pollDevState: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    try {
+      const st = await api.getDevState(pid)
+      set({ devState: st })
+      if (st.phase === 'COMPLETED' || st.phase === 'DEV_FAILED' || st.phase === 'FAILED') get().stopDevPoll()
+    } catch { /* 瞬时错误保留旧态 */ }
+  },
+  stopDevPoll: () => {
+    const t = get().devPollTimer
+    if (t != null) window.clearInterval(t)
+    set({ devPollTimer: null })
+  },
+  startDevPipeline: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    try { await api.terminateDev(pid) } catch { /* 忽略 */ }
+    await api.startDevPipeline(pid)
+    get().ensureDevPoll()
+  },
+  submitDevFeedback: async (action, note) => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    await api.submitDevFeedback(pid, action, note)
+    void get().pollDevState()
+  },
+  loadDevGitTags: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    try {
+      const r = await api.getDevGitTags(pid)
+      set({ devGitTags: r.tags ?? [] })
+    } catch { set({ devGitTags: [] }) }
+  },
+  loadDevSrcTree: async () => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    try {
+      const r = await api.getDevSrcTree(pid)
+      set({ devSrcTree: (r.tree ?? []) as FileNode[] })
+    } catch { set({ devSrcTree: [] }) }
+  },
+  loadDevSrcFile: async (path) => {
+    const pid = currentNumericProjectId(get())
+    if (pid == null) return
+    try {
+      const r = await api.getDevSrcFile(pid, path)
+      set({ devFileContent: r.content ?? '' })
+    } catch { set({ devFileContent: '' }) }
+  },
 }))
 
 // ── 选择器 hooks ────────────────────────────────────────────
@@ -694,3 +1163,11 @@ export const useCurrentAssetDoc = (): string =>
 
 export const useActiveModule = (): CodeModule | undefined =>
   useGameStore((s) => s.modules.find((m) => m.id === s.activeModuleId))
+
+// ── 阶段3 dev 选择器 + helper 导出（供 /coder 组件用）──
+export const useDevState = () => useGameStore((s) => s.devState)
+export const useIsRealDevProject = (): boolean => {
+  const id = useGameStore((s) => s.currentGameId)
+  return !!(id && /^\d+$/.test(id))
+}
+export { mapDevPhaseToNode, mapDevVersionsToModules }

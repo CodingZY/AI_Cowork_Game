@@ -34,6 +34,22 @@ class Settings(BaseSettings):
     temporal_port: int = 7233
     temporal_namespace: str = "default"
     temporal_task_queue: str = "game-design"
+    # === Phase 2: AutoDL Hunyuan-DiT 生图 ===
+    # 两者皆空时 ImageGenClient 返回占位图（端到端跑通 rembg/后处理链路）。
+    autodl_base_url: str = ""
+    autodl_api_key: str = ""
+    art_assets_parallel: int = 4
+    # === seedream 文生图（金山云 KSPMAS，独立配置；默认仍指向金山云 + 复用 kimi key） ===
+    # 走标准 OpenAI images 端点 {base}/v1/images/generations，返回 b64_json；与 Hunyuan 二选一（per-project art-model.txt）。
+    # seedream_api_key 留空时 fallback 用 anthropic_auth_token（kimi 同 key），无需重复填写。
+    seedream_base_url: str = "https://kspmas.ksyun.com"
+    seedream_api_key: str = ""
+    seedream_model: str = "seedream-5.0-pro-domestic"
+    # === Observability (Langfuse) ===
+    # 两者皆空时 get_langfuse() 返回 None，埋点静默跳过 Langfuse 上报（业务表仍写）。
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = "http://localhost:3000"
 
     @classmethod
     def settings_customise_sources(

@@ -61,11 +61,17 @@ async def mock_check_gdd(gdd) -> dict:
     return {"status": "PASS", "blocking": [], "warnings": []}
 
 
+@activity.defn(name="update_project_status")
+async def mock_update_project_status(status: str) -> None:
+    pass
+
+
 MOCK_ACTIVITIES = [
     mock_analyze_idea,
     mock_synthesize_requirements,
     mock_generate_gdd,
     mock_check_gdd,
+    mock_update_project_status,
 ]
 
 
@@ -84,7 +90,7 @@ async def _wait_until(handle, predicate, timeout: float = 5.0) -> dict:
 
 
 async def test_workflow_signal_advances_questions():
-    """Signal submit_answer 逐题推进，答完→synthesize→gdd→check→COMPLETED。"""
+    """Signal submit_answer 逐题推进，答完→synthesize→gdd→GDD_REVIEW→save_gdd→check→COMPLETED。"""
     env = await WorkflowEnvironment.start_time_skipping()
     try:
         async with Worker(
@@ -116,6 +122,9 @@ async def test_workflow_signal_advances_questions():
                 GameDesignWorkflow.submit_answer,
                 AnswerSignal(question_id="core_loop", answer="farming"),
             )
+            # 答完→生成 GDD→暂停在 GDD_REVIEW，需 save_gdd signal 放行
+            await _wait_until(handle, lambda s: s["phase"] == "GDD_REVIEW")
+            await handle.signal(GameDesignWorkflow.save_gdd, "# GDD\n")
             result = await handle.result()
             assert result["check"]["status"] == "PASS"
             final = await handle.query(GameDesignWorkflow.get_design_state)
@@ -147,6 +156,9 @@ async def test_workflow_skip_uses_default():
                 GameDesignWorkflow.submit_answer,
                 AnswerSignal(question_id="core_loop", answer="farming"),
             )
+            # 答完→GDD_REVIEW→save_gdd 放行→check→COMPLETED
+            await _wait_until(handle, lambda s: s["phase"] == "GDD_REVIEW")
+            await handle.signal(GameDesignWorkflow.save_gdd, "# GDD\n")
             result = await handle.result()
             assert result["check"]["status"] == "PASS"
     finally:

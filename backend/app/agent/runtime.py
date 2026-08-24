@@ -54,11 +54,17 @@ class ClaudeRuntime:
     def _build_cmd(self, prompt, resume_sid=None, system_prompt=None, plugin_dir=None) -> list[str]:
         # --bare 强制：不带会背 26707 token 宿主上下文 + hook 报错 + refusal（spike）
         # 首元素用解析出的 claude.exe 绝对路径（Windows，见 _resolve_claude_bin）
+        # --allowedTools 是「预批准列表」非工具白名单——未列工具仍可用，只走权限判定
+        # （实证：仅 --allowedTools Read Write 没拦住 PowerShell）。故加 --disallowedTools
+        # 硬禁 shell（deny 压过内置只读命令启发式 + 任何继承 allow），实测工具名为 PowerShell。
+        # 不用 --include-partial-messages：partial message 单行会随 LLM 输出累积超长（code-gen
+        # 生成大代码时单行 >64KB 触发 asyncio readline ValueError "chunk longer than limit"）。
+        # 后端只等 session.completed.result，不消费 partial，去掉后完整 event 行短且稳定。
         cmd = [
             self.claude_bin, "-p", prompt,
             "--output-format", "stream-json", "--verbose",
-            "--include-partial-messages",
             "--bare", "--allowedTools", "Read", "Write",
+            "--disallowedTools", "PowerShell", "Bash",
             "--permission-mode", "acceptEdits",
         ]
         if system_prompt:
@@ -83,17 +89,29 @@ class ClaudeRuntime:
 
     async def _spawn_stream(self, cmd, env, cwd) -> list[str]:
         # 可 monkeypatch 接缝。真实实现：spawn 子进程逐行读 stdout 收集。
+        # limit=16MB：StreamReader 默认 64KB，超长行（大 content 的 stream-json event）
+        # 会触发 readline ValueError。已去 --include-partial-messages 让行变短，此处再放宽双保险。
         self.proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
             cwd=cwd,
+            limit=2 ** 24,
         )
         lines: list[str] = []
-        async for raw in self.proc.stdout:
-            lines.append(raw.decode("utf-8", "replace"))
-        await self.proc.wait()
+        try:
+            async for raw in self.proc.stdout:
+                lines.append(raw.decode("utf-8", "replace"))
+            await self.proc.wait()
+        except BaseException:
+            # cancel/异常（Temporal activity start_to_close_timeout 取消等）→ 强 kill 子进程。
+            # 否则 Windows 上外部取消不触发 stdout EOF、proc 变孤儿
+            # （实证：consistency check 卡死时 11 个 claude.exe 堆积）。
+            # 用 kill()（TerminateProcess 强制）非 terminate()（CtrlEvent，Windows 不可靠）。
+            if self.proc and self.proc.returncode is None:
+                self.proc.kill()
+            raise
         return lines
 
     async def _run(
@@ -145,5 +163,6 @@ class ClaudeRuntime:
             yield evt
 
     async def cancel(self):
+        # kill()（TerminateProcess 强制）非 terminate()（CtrlEvent，Windows console 子进程才响应）。
         if self.proc and self.proc.returncode is None:
-            self.proc.terminate()
+            self.proc.kill()

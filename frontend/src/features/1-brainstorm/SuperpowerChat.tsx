@@ -10,6 +10,7 @@ import { cn, formatTime } from '@/lib/utils'
 import { OptionChips } from './OptionChips'
 import { LandedCard } from './LandedCard'
 import { QuestionCard } from './QuestionCard'
+import { GddReviewPanel } from './GddReviewPanel'
 import { ProgressStepper } from './ProgressStepper'
 
 export function SuperpowerChat() {
@@ -96,6 +97,7 @@ export function SuperpowerChat() {
               <Spinner className="size-3.5" /> 生成 GDD 中…
             </div>
           )}
+          {phase === 'GDD_REVIEW' && <GddReviewPanel />}
           {phase === 'CHECKING_GDD' && (
             <div className="flex items-center gap-2 p-4 text-sm text-ink-3">
               <Spinner className="size-3.5" /> 检查 GDD 中…

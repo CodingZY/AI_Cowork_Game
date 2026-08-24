@@ -4,8 +4,7 @@ from sqlalchemy import select
 
 from app.events.broker import EventBroker
 from app.models.event import Event
-from app.models.agent_session import AgentSession
-from app.persistence.repo import EventRepo, ProjectRepo, AgentSessionRepo
+from app.persistence.repo import EventRepo, ProjectRepo
 from app.schemas.event import CoworkEvent
 
 
@@ -154,66 +153,3 @@ async def test_project_repo_create_get_set_status(async_db_session):
     refreshed = await repo.get(created.id)
     assert refreshed.status == "ANALYZING"
 
-
-# ---------------------------------------------------------------------------
-# AgentSessionRepo
-# ---------------------------------------------------------------------------
-
-
-async def test_agent_session_repo_create_bind_finish_last_claude(async_db_session):
-    project = await ProjectRepo(async_db_session).create(
-        project_key="sessproj",
-        name="SessProj",
-        status="CREATED",
-        workspace_root="Games/sessproj",
-    )
-    await async_db_session.commit()
-
-    repo = AgentSessionRepo(async_db_session)
-
-    # create：status=RUNNING，claude_session_id=None
-    s = await repo.create(
-        project_id=project.id,
-        agent_type="brainstorm",
-        working_directory="Games/sessproj",
-    )
-    await async_db_session.commit()
-    assert s.id is not None
-    assert s.status == "RUNNING"
-    assert s.claude_session_id is None
-
-    # bind_claude_session
-    await repo.bind_claude_session(s.id, "claude-sess-1")
-    await async_db_session.commit()
-
-    # last_claude_session：还没有 COMPLETED，应返回 None
-    assert await repo.last_claude_session(project.id, "brainstorm") is None
-
-    # finish -> COMPLETED
-    await repo.finish(s.id, "COMPLETED")
-    await async_db_session.commit()
-
-    # last_claude_session：现在应返回 claude-sess-1
-    last = await repo.last_claude_session(project.id, "brainstorm")
-    assert last == "claude-sess-1"
-
-    # 第二个 session（FAILED，无 claude_session_id）不应覆盖 last
-    s2 = await repo.create(
-        project_id=project.id,
-        agent_type="brainstorm",
-        working_directory="Games/sessproj",
-    )
-    await repo.finish(s2.id, "FAILED")
-    await async_db_session.commit()
-    assert await repo.last_claude_session(project.id, "brainstorm") == "claude-sess-1"
-
-    # 第三个 session（COMPLETED，新 claude_session_id）应成为 last
-    s3 = await repo.create(
-        project_id=project.id,
-        agent_type="brainstorm",
-        working_directory="Games/sessproj",
-    )
-    await repo.bind_claude_session(s3.id, "claude-sess-3")
-    await repo.finish(s3.id, "COMPLETED")
-    await async_db_session.commit()
-    assert await repo.last_claude_session(project.id, "brainstorm") == "claude-sess-3"

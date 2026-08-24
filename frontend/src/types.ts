@@ -82,8 +82,13 @@ export interface ChatMessage {
 }
 
 // ── 素材管线 ─────────────────────────────────────────────────
-export type AssetCategory = 'background' | 'character' | 'item' | 'ui'
-export type AssetStatus = 'todo' | 'generating' | 'raw' | 'matting' | 'done'
+// 后端标准 9 类 + 兼容 mock 的 background/item + kimi 自由发挥的 facility/resource/environment/threat/vfx/lighting/screen
+export type AssetCategory =
+  | 'character' | 'npc' | 'building' | 'animal' | 'plant'
+  | 'prop' | 'map' | 'ui' | 'icon'
+  | 'background' | 'item'
+  | 'facility' | 'resource' | 'environment' | 'threat' | 'vfx' | 'lighting' | 'screen'
+export type AssetStatus = 'todo' | 'generating' | 'raw' | 'matting' | 'done' | 'failed'
 
 export interface AssetItem {
   id: string
@@ -97,22 +102,25 @@ export interface AssetItem {
   processedUrl?: string
   rawUrl?: string
   selected?: boolean
+  real?: boolean  // 真后端 art asset（AssetStudio 映射时设 true，控制 AssetCard 按钮行为）
 }
 
 export const CATEGORY_LABEL: Record<AssetCategory | 'all', string> = {
   all: '全部',
-  background: '背景',
-  character: '角色',
-  item: '道具',
-  ui: 'UI',
+  character: '角色', npc: 'NPC', building: '建筑', animal: '动物', plant: '植物',
+  prop: '道具', map: '地图', ui: 'UI', icon: '图标',
+  background: '背景', item: '道具',
+  facility: '设施', resource: '资源', environment: '环境', threat: '威胁',
+  vfx: '特效', lighting: '光照', screen: '画面',
 }
 
 export const CATEGORY_EMOJI: Record<AssetCategory | 'all', string> = {
   all: '🗂️',
-  background: '🌄',
-  character: '🧙',
-  item: '🧱',
-  ui: '🧩',
+  character: '🧙', npc: '🧑', building: '🏠', animal: '🐄', plant: '🌳',
+  prop: '🧱', map: '🗺️', ui: '🧩', icon: '🔯',
+  background: '🌄', item: '🧱',
+  facility: '🗼', resource: '⛽', environment: '🌿', threat: '👻',
+  vfx: '✨', lighting: '💡', screen: '🖥️',
 }
 
 // ── 代码工作区 ───────────────────────────────────────────────
@@ -148,6 +156,7 @@ export interface PreviewState {
   url: string
   versionTag: string
   loading: boolean
+  playtestUrl?: string  // 真后端 dev playtest URL（/play/builds/.../dist/），有则 iframe 加载
 }
 
 export interface GitVersion {

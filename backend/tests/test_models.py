@@ -3,7 +3,6 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from app.models.project import Project
-from app.models.agent_session import AgentSession
 from app.models.event import Event
 
 
@@ -17,29 +16,6 @@ async def test_project_insert(async_db_session):
     async_db_session.add(p)
     await async_db_session.flush()
     assert p.id is not None
-
-
-async def test_agent_session_insert(async_db_session):
-    p = Project(
-        project_key="sessproj",
-        name="SessProj",
-        status="CREATED",
-        workspace_root="Games/sessproj",
-    )
-    async_db_session.add(p)
-    await async_db_session.flush()
-
-    s = AgentSession(
-        project_id=p.id,
-        agent_type="brainstorm",
-        status="RUNNING",
-        working_directory="Games/sessproj",
-    )
-    async_db_session.add(s)
-    await async_db_session.flush()
-    assert s.id is not None
-    assert s.project_id == p.id
-    assert s.claude_session_id is None  # nullable, backfilled on system/init
 
 
 async def test_event_insert_payload_roundtrip(async_db_session):
@@ -76,3 +52,32 @@ async def test_event_insert_payload_roundtrip(async_db_session):
     assert fetched.event_id == "evt_abc123"
     assert fetched.aggregate_type == "agent_session"
     assert fetched.aggregate_id == p.id
+
+
+async def test_game_build_insert(async_db_session):
+    from app.models.game_build import GameBuild
+
+    b = GameBuild(
+        project_id=1, version="V1", status="SUCCESS",
+        dist_path="/tmp/dist", duration_ms=4200, workflow_run_id="dev-1-run",
+    )
+    async_db_session.add(b)
+    await async_db_session.flush()
+    assert b.id is not None
+    assert b.status == "SUCCESS"
+
+
+async def test_game_observation_insert(async_db_session):
+    from app.models.game_observation import GameObservation
+
+    o = GameObservation(
+        project_id=1, phase="3", observation_type="skill",
+        name="game-code-generator", mode="coder", version="V1",
+        status="OK", input_tokens=310, output_tokens=92, total_tokens=402,
+        duration_ms=378000, cost_usd=0.12, meta={"run_id": "dev-1-run"},
+    )
+    async_db_session.add(o)
+    await async_db_session.flush()
+    assert o.id is not None
+    assert o.meta == {"run_id": "dev-1-run"}
+    assert o.total_tokens == 402

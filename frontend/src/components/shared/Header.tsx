@@ -1,9 +1,12 @@
+import { NavLink } from 'react-router-dom'
+import { Activity } from 'lucide-react'
 import { useGameStore, useCurrentGame } from '@/store/useGameStore'
 import { stageIndex, stageShort } from '@/types'
 import { Separator } from '@/components/ui/separator'
 import { StatusLight } from '@/components/ui/status-light'
 import { GameSwitcher } from './GameSwitcher'
 import { StageStepper } from './StageStepper'
+import { cn } from '@/lib/utils'
 
 export function Header() {
   const game = useCurrentGame()
@@ -24,7 +27,22 @@ export function Header() {
             {game ? `${stageIndex(game.currentStage)}. ${stageShort(game.currentStage)}` : '-'}
           </span>
         </div>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          <NavLink
+            to="/observability"
+            className={({ isActive }) =>
+              cn(
+                'flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition',
+                isActive
+                  ? 'border-accent/60 bg-accent/10 text-accent'
+                  : 'border-line/60 bg-surface text-ink-2 hover:text-ink',
+              )
+            }
+            title="Game Observability"
+          >
+            <Activity className="size-3.5" />
+            <span className="hidden sm:inline">观测</span>
+          </NavLink>
           <StatusLight status={agentStatus} />
         </div>
       </div>

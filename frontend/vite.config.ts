@@ -10,6 +10,9 @@ export default defineConfig({
       '@': path.resolve(__dirname, 'src'),
     },
   },
-  server: { port: 5173, proxy: { '/api': 'http://127.0.0.1:8000' } },
+  server: { host: '127.0.0.1', port: 5173, proxy: {
+    '/api': 'http://127.0.0.1:8000',
+    '/play': 'http://127.0.0.1:8000',  // playtest 部署（StaticFiles）在后端 8000
+  } },
   test: { environment: 'jsdom', globals: true, setupFiles: ['./src/setup.ts'] },
 })

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import func, select, update
+from datetime import datetime
+
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.agent_session import AgentSession
-from app.models.brainstorm_questions import BrainstormQuestion
 from app.models.event import Event
+from app.models.game_build import GameBuild
+from app.models.game_observation import GameObservation
 from app.models.project import Project
 from app.models.project_repository import ProjectRepository
 from app.schemas.event import CoworkEvent
@@ -107,64 +109,6 @@ class ProjectRepo:
         )
 
 
-class AgentSessionRepo:
-    """agent_sessions 表 CRUD 封装（spec §6.2）。
-
-    claude_session_id 在 system/init 到来后回填（bind_claude_session）。
-    last_claude_session 供 resume 用：取该 project+agent_type 最近一次 COMPLETED
-    的 claude_session_id。
-    """
-
-    def __init__(self, session: AsyncSession):
-        self.session = session
-
-    async def create(
-        self, project_id: int, agent_type: str, working_directory: str
-    ) -> AgentSession:
-        row = AgentSession(
-            project_id=project_id,
-            agent_type=agent_type,
-            working_directory=working_directory,
-            status="RUNNING",
-            claude_session_id=None,
-        )
-        self.session.add(row)
-        await self.session.flush()
-        return row
-
-    async def bind_claude_session(self, id: int, claude_session_id: str) -> None:
-        await self.session.execute(
-            update(AgentSession)
-            .where(AgentSession.id == id)
-            .values(claude_session_id=claude_session_id)
-        )
-
-    async def finish(self, id: int, status: str) -> None:
-        """结束 session：更新 status + last_message_at（DB server_side now）。"""
-        await self.session.execute(
-            update(AgentSession)
-            .where(AgentSession.id == id)
-            .values(status=status, last_message_at=func.now())
-        )
-
-    async def last_claude_session(
-        self, project_id: int, agent_type: str
-    ) -> Optional[str]:
-        """resume 用：该 project+agent_type 最近一次 COMPLETED 的 claude_session_id。"""
-        q = (
-            select(AgentSession.claude_session_id)
-            .where(
-                AgentSession.project_id == project_id,
-                AgentSession.agent_type == agent_type,
-                AgentSession.status == "COMPLETED",
-                AgentSession.claude_session_id.is_not(None),
-            )
-            .order_by(AgentSession.id.desc())
-            .limit(1)
-        )
-        return (await self.session.execute(q)).scalar_one_or_none()
-
-
 class ProjectRepositoryRepo:
     """project_repositories 表 CRUD（spec §5.3，D6）。"""
 
@@ -215,32 +159,109 @@ class ProjectRepositoryRepo:
         )
 
 
-class QuestionRepo:
-    """brainstorm_questions 表 CRUD（spec §5.5）。"""
+class GameBuildRepo:
+    """game_builds 表 CRUD（Observability，design §21）。每次 build_game 调用一行。"""
 
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def create(self, project_id: int, round: int, questions: list) -> BrainstormQuestion:
-        row = BrainstormQuestion(project_id=project_id, round=round, questions=questions)
+    async def create(
+        self,
+        *,
+        project_id: int,
+        version: str,
+        status: str,
+        dist_path: Optional[str] = None,
+        build_log: Optional[str] = None,
+        error_message: Optional[str] = None,
+        duration_ms: Optional[int] = None,
+        workflow_run_id: Optional[str] = None,
+        langfuse_observation_id: Optional[str] = None,
+        started_at: Optional[datetime] = None,
+        ended_at: Optional[datetime] = None,
+    ) -> GameBuild:
+        row = GameBuild(
+            project_id=project_id,
+            version=version,
+            status=status,
+            dist_path=dist_path,
+            build_log=build_log,
+            error_message=error_message,
+            duration_ms=duration_ms,
+            workflow_run_id=workflow_run_id,
+            langfuse_observation_id=langfuse_observation_id,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
         self.session.add(row)
         await self.session.flush()
         return row
 
-    async def get_latest(self, project_id: int) -> Optional[BrainstormQuestion]:
-        q = (
-            select(BrainstormQuestion)
-            .where(BrainstormQuestion.project_id == project_id)
-            .order_by(BrainstormQuestion.round.desc())
-            .limit(1)
-        )
-        return (await self.session.execute(q)).scalar_one_or_none()
-
-    async def set_answers(self, project_id: int, round: int, answers: list) -> None:
-        row = await self.get_latest(project_id)
-        if row is not None:
+    async def list_by_project(self, project_id: int) -> list[GameBuild]:
+        return (
             await self.session.execute(
-                update(BrainstormQuestion)
-                .where(BrainstormQuestion.id == row.id)
-                .values(answers=answers)
+                select(GameBuild)
+                .where(GameBuild.project_id == project_id)
+                .order_by(GameBuild.id)
             )
+        ).scalars().all()
+
+
+class GameObservationRepo:
+    """game_observations 表 CRUD（Observability，Phase 耗时/Token 聚合源）。"""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(
+        self,
+        *,
+        project_id: int,
+        phase: str,
+        observation_type: str,
+        name: str,
+        mode: Optional[str] = None,
+        version: Optional[str] = None,
+        status: str = "OK",
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+        total_tokens: Optional[int] = None,
+        duration_ms: Optional[int] = None,
+        cost_usd: Optional[float] = None,
+        metadata: Optional[dict] = None,
+        langfuse_trace_id: Optional[str] = None,
+        langfuse_observation_id: Optional[str] = None,
+        started_at: Optional[datetime] = None,
+        ended_at: Optional[datetime] = None,
+    ) -> GameObservation:
+        row = GameObservation(
+            project_id=project_id,
+            phase=phase,
+            observation_type=observation_type,
+            name=name,
+            mode=mode,
+            version=version,
+            status=status,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            duration_ms=duration_ms,
+            cost_usd=cost_usd,
+            meta=metadata,
+            langfuse_trace_id=langfuse_trace_id,
+            langfuse_observation_id=langfuse_observation_id,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def list_by_project(self, project_id: int) -> list[GameObservation]:
+        return (
+            await self.session.execute(
+                select(GameObservation)
+                .where(GameObservation.project_id == project_id)
+                .order_by(GameObservation.id)
+            )
+        ).scalars().all()
