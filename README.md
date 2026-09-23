@@ -1,4 +1,15 @@
 <!-- 现有功能介绍 -->
+# 效果展示
+<img width="2864" height="1536" alt="d892a241d3052afe4730d6fcd95f7ffc" src="https://github.com/user-attachments/assets/8ab58fb7-bbde-4ec4-a480-dff411c418d8" />
+
+<img width="2864" height="1536" alt="63cf472212cd3094e6cda473856265de" src="https://github.com/user-attachments/assets/dfdbb8d6-8e6a-4290-a738-444b238c8374" />
+
+<img width="2864" height="1536" alt="d3f6b42283f8286acfccaaaf91852af5" src="https://github.com/user-attachments/assets/26596ef9-454d-473b-86be-088d442a1b41" />
+
+<img width="2864" height="1536" alt="d595612a08d0c9c309fa29394ca88b4a" src="https://github.com/user-attachments/assets/f2902451-3118-49cf-a7bb-c8ad324a6044" />
+
+<img width="2864" height="1536" alt="43a45aa9b5dd8e7c792e71e58f849364" src="https://github.com/user-attachments/assets/2135b8c1-8a8c-4910-9fb1-31b73871683f" />
+
 
 # 项目启动
 
